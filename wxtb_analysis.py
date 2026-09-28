@@ -25,7 +25,7 @@ with st.sidebar:
     st.divider()
     st.subheader("🚨异常预警阈值")
     max_cpc_warn = st.number_input("CPC过高预警(元)", min_value=0.0, value=2.0, step=0.1, help="单次点击成本超过该值标记预警")
-    min_ctr_warn = st.number_input("CTR过低预警(小数)", min_value=0.001, value=0.02, step=0.001, help="点击率低于该值标记预警，一般搜索2%‑5%")
+    min_ctr_warn = st.number_input("CTR过低预警(小数)", min_value=0.001, value=0.02, step=0.001, help="点击率低于该值标记预警，一般搜索2%-5%")
 
     st.divider()
     st.subheader("📂多文件上传（支持多日报表做趋势）")
@@ -51,7 +51,7 @@ def get_optimize_suggest(row, target_roi, min_spend):
     elif roi>0 and roi < target_roi*0.6 and cost> min_spend*3:
         return {"等级":"🔻高花费低ROI","策略":"花钱多投产差，浪费预算","执行":"降低出价30% 或直接暂停"}
     elif roi>0 and roi < target_roi:
-        return {"等级":"⚠️观察待优化","策略":"投产略低于目标，小幅压出价观察2‑3天","执行":"出价下调10‑20%，继续观察数据"}
+        return {"等级":"⚠️观察待优化","策略":"投产略低于目标，小幅压出价观察2-3天","执行":"出价下调10-20%，继续观察数据"}
     else:
         return {"等级":"🔴无成交","策略":"有花费完全没产出","执行":"优先降价，无改善直接暂停"}
 
@@ -199,7 +199,7 @@ if len(df_all_list)>0:
     real_show = [x for x in show_cols if x in df_view.columns]
     st.dataframe(df_view[real_show].round(2), use_container_width=True, hide_index=True)
 
-    csv_data = df_view.to_csv(index=False,encoding="utf‑8‑sig")
+    csv_data = df_view.to_csv(index=False,encoding="utf-8-sig")
     st.download_button("📥下载优化执行清单CSV",data=csv_data,file_name="万相台_优化执行清单.csv")
 
     st.markdown("#### 各等级数量统计")
@@ -218,12 +218,12 @@ if len(df_all_list)>0:
         with f2:
             action_select = st.selectbox("执行动作",["提升预算","降低出价","提高出价","降低预算","暂停单元","开启单元","修改创意","其他"])
         with f3:
-            adjust_text = st.text_input("调整内容，例：出价‑20%，预算+150")
+            adjust_text = st.text_input("调整内容，例：出价-20%，预算+150")
             note_text = st.text_input("备注，例：预计观察3天数据")
         submitted = st.form_submit_button("✅保存本次操作记录")
         if submitted:
             new_row = {
-                "记录时间":datetime.now().strftime("%Y‑%m‑%d %H:%M:%S"),
+                "记录时间":datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                 "推广类型":log_promo_type,
                 "对象名称":log_obj_name,
                 "执行动作":action_select,
@@ -237,13 +237,13 @@ if len(df_all_list)>0:
             st.success("操作记录已写入会话！注意页面刷新记录会丢失，请及时导出！")
 
     st.dataframe(st.session_state["optimize_log"], hide_index=True, use_container_width=True)
-    log_csv = st.session_state["optimize_log"].to_csv(index=False,encoding="utf‑8‑sig")
+    log_csv = st.session_state["optimize_log"].to_csv(index=False,encoding="utf-8-sig")
     st.download_button("📥导出全部操作记录CSV", data=log_csv, file_name="万相台_投放操作记录.csv")
 
     st.markdown("""
 > 💡策略&预警逻辑说明：
-> 1. ✅优质可放大：ROI≥保本ROI，花费达标 → 预算+10‑20%，小幅抬高出价放量
-> 2. ⚠️观察待优化：ROI略低于保本线 → 出价下调10‑20%，观察2‑3天
+> 1. ✅优质可放大：ROI≥保本ROI，花费达标 → 预算+10-20%，小幅抬高出价放量
+> 2. ⚠️观察待优化：ROI略低于保本线 → 出价下调10-20%，观察2-3天
 > 3. 🔻高花费低ROI：花费大ROI远低于保本 → 大幅降价或直接暂停
 > 4. 🔴无成交：有花费无订单 → 优先降价，无效关停
 > 5. 🟡样本不足：花费低于阈值，不操作
