@@ -56,7 +56,7 @@ if "manual_api_key" not in st.session_state:
 
 COLOR_MAP = {
     "🔴立即处理": "#e74c3c",
-    "🟠重点观察": "#e67e22",
+    "⚠️重点观察": "#e67e22",
     "🟡样本不足": "#f1c40f",
     "🟢可以放量": "#27ae60",
     "⚪暂不操作": "#95a5a6",
@@ -64,7 +64,7 @@ COLOR_MAP = {
 
 LEVEL_ORDER = [
     "🔴立即处理",
-    "🟠重点观察",
+    "⚠️重点观察",
     "🟡样本不足",
     "🟢可以放量",
     "⚪暂不操作",
@@ -72,7 +72,7 @@ LEVEL_ORDER = [
 
 
 # ============================================================
-# 3. 字段别名
+# 3. 字段别名【修复：补全关键词报表列名】
 # ============================================================
 
 COL_ALIASES = {
@@ -113,6 +113,7 @@ COL_ALIASES = {
         "场景",
     ],
 
+    # =========修复点：增加万相台关键词报表真实列名=========
     "关键词": [
         "关键词",
         "词",
@@ -262,7 +263,7 @@ def clean_numeric(series):
 
 
 # ============================================================
-# 5. 数据读取
+# 5. 数据读取【修复：过滤合计行 + 去重，解决金额重复叠加】
 # ============================================================
 
 @st.cache_data(show_spinner="正在读取报表...")
@@ -300,6 +301,15 @@ def load_raw(files_data):
 
             tmp["__来源文件"] = name
 
+            # 过滤合计、小计、总计汇总行（万相台导出Excel自带尾部汇总行）
+            text_cols = tmp.select_dtypes(include=["object"]).columns
+            filter_mask = pd.Series([True]*len(tmp), index=tmp.index)
+            kw_filter = ["合计","小计","总计","汇总","全部"]
+            for col in text_cols:
+                mask = ~tmp[col].astype(str).str.contains("|".join(kw_filter), na=False)
+                filter_mask = filter_mask & mask
+            tmp = tmp.loc[filter_mask].copy()
+
             frames.append(tmp)
 
         except Exception as e:
@@ -311,11 +321,16 @@ def load_raw(files_data):
     if not frames:
         return pd.DataFrame()
 
-    return pd.concat(
+    df_all = pd.concat(
         frames,
         ignore_index=True,
         sort=False
     )
+    # 业务字段去重，忽略来源文件名，防止重复上传同一个文件金额翻倍
+    business_cols = [c for c in df_all.columns if c != "__来源文件"]
+    df_all = df_all.drop_duplicates(subset=business_cols, keep="first")
+
+    return df_all
 
 
 # ============================================================
@@ -766,7 +781,7 @@ def calculate_confidence(
     if score >= 50:
 
         return (
-            "🟡中可信",
+            "⚠️中可信",
             score
         )
 
@@ -962,7 +977,7 @@ def diagnose_row(
 
     elif roi < roi_target:
 
-        level = "🟠重点观察"
+        level = "⚠️重点观察"
 
         action = (
             f"降低出价 {max(5, reduce_bid_pct // 2)}%"
@@ -1016,7 +1031,7 @@ def diagnose_row(
                     f"-{reduce_bid_pct}%"
                     if level in [
                         "🔴立即处理",
-                        "🟠重点观察",
+                        "⚠️重点观察",
                     ]
                     else "0%"
                 )
@@ -1245,7 +1260,7 @@ else:
 
     observe = df_product[
         df_product["等级"]
-        == "🟠重点观察"
+        == "⚠️重点观察"
     ].copy()
 
     sample = df_product[
@@ -1266,7 +1281,7 @@ else:
     )
 
     c3.metric(
-        "🟠重点观察",
+        "⚠️重点观察",
         len(observe)
     )
 
@@ -1300,7 +1315,7 @@ else:
     else:
 
         st.warning(
-            f"🟠 当前投放处于观察阶段。"
+            f"⚠️ 当前投放处于观察阶段。"
             f"整体 ROI {overall_roi:.2f}，目标 {roi_target:.2f}。"
         )
 
@@ -1342,7 +1357,7 @@ if not df_product.empty:
             [
                 "🔴立即处理",
                 "🟢可以放量",
-                "🟠重点观察",
+                "⚠️重点观察",
             ]
         )
     ][execute_cols].copy()
@@ -1517,7 +1532,7 @@ if not df_product.empty:
             [
                 "🔴立即处理",
                 "🟢可以放量",
-                "🟠重点观察",
+                "⚠️重点观察",
             ]
         )
     ].copy()
@@ -1639,7 +1654,7 @@ if (
         else:
 
             st.info(
-                "🟡 最近一天 ROI 没有出现剧烈变化。"
+                "⚠️ 最近一天 ROI 没有出现剧烈变化。"
             )
 
         trend_col1, trend_col2 = st.columns(2)
@@ -1927,11 +1942,11 @@ with tabs[4]:
     st.subheader(
         "🔑 关键词诊断"
     )
-
+    st.info("⚠️注意：万相台【关键词报表】本身不含商品字段，仅做关键词维度分析。")
     if df_keyword.empty:
 
         st.warning(
-            "没有识别到关键词字段。"
+            "没有识别到关键词字段，请确认报表列名：词名字/词包名字。"
         )
 
     else:
@@ -2202,7 +2217,7 @@ with tabs[7]:
 
         observe_ai = df_product[
             df_product["等级"]
-            == "🟠重点观察"
+            == "⚠️重点观察"
         ].head(10)
 
         ai_payload = {
@@ -2362,7 +2377,7 @@ with tabs[7]:
 
 # 今日军师结论
 
-用3-5句话总结今天整个账户。
+用3‑5句话总结今天整个账户。
 
 # 一、今天必须处理
 
@@ -2419,13 +2434,13 @@ with tabs[7]:
                         "Authorization":
                             f"Bearer {api_key}",
 
-                        "Content-Type":
+                        "Content‑Type":
                             "application/json",
                     }
 
                     payload = {
                         "model":
-                            "doubao-pro-4k",
+                            "doubao‑pro‑4k",
 
                         "messages": [
                             {
