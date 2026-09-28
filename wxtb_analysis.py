@@ -4,8 +4,8 @@ import plotly.express as px
 import numpy as np
 from datetime import datetime
 
-st.set_page_config(page_title="万相台投放工作台V3", layout="wide")
-st.title("📊万相台推广数据分析 & 自动优化策略V3")
+st.set_page_config(page_title="万相台投放工作台V4", layout="wide")
+st.title("📊万相台推广数据分析 & 自动优化策略V4")
 
 # 会话存储：投放操作记录
 if "action_log" not in st.session_state:
@@ -27,7 +27,7 @@ with st.sidebar:
         ["✅优质可放大","⚠️观察待优化","🔻高花费低ROI","🟡样本不足","🔴无成交"],
         default=["✅优质可放大","⚠️观察待优化","🔻高花费低ROI","🔴无成交"])
 
-    upload_file = st.file_uploader("上传万相台Excel/Csv报表", type=["xlsx","xls","csv"], accept_multiple_files=True)
+    upload_file = st.file_uploader("上传万相台Excel/Csv报表，多日请多选文件", type=["xlsx","xls","csv"], accept_multiple_files=True)
 
 # ----------------------工具函数 ----------------------
 def get_suggest(row, target_roi, min_spend):
@@ -79,8 +79,40 @@ if upload_file:
 
 if len(df_raw_list)>0:
     df_raw = pd.concat(df_raw_list, ignore_index=True)
-    st.subheader("原始数据预览")
-    st.dataframe(df_raw.head(6), hide_index=True)
+
+    # =========【升级】原始文件概览信息 =========
+    st.subheader("📄原始文件概览")
+    total_rows = len(df_raw)
+    all_cols = list(df_raw.columns)
+    key_required = ["花费","成交金额","点击量","日期","商品ID","商品名称","关键词","人群包名称"]
+    missing_key = [c for c in key_required if c not in all_cols]
+
+    c_info1,c_info2 = st.columns(2)
+    with c_info1:
+        st.metric("合并总行数", f"{total_rows:,}")
+        st.markdown(f"识别字段：`{', '.join(all_cols)}`")
+    with c_info2:
+        if len(missing_key)>0:
+            st.warning(f"⚠️缺失关键字段：{', '.join(missing_key)}，对应功能将不可用")
+        else:
+            st.success("✅全部关键字段已识别")
+
+    st.markdown("原始数据预览（最多展示8行）")
+    st.dataframe(df_raw.head(8), hide_index=True)
+
+    # --------原始预览区快速小图表--------
+    st.markdown("#### 📊快速概览图表")
+    col_q1,col_q2 = st.columns(2)
+    with col_q1:
+        if "花费" in df_raw.columns:
+            fig_cost_hist = px.histogram(df_raw, x="花费", title="单条记录花费分布", nbins=20)
+            st.plotly_chart(fig_cost_hist, use_container_width=True)
+    with col_q2:
+        if "成交金额" in df_raw.columns and "花费" in df_raw.columns:
+            temp_df = df_raw.copy()
+            temp_df["ROI"] = np.where(temp_df["花费"]>0, temp_df["成交金额"]/temp_df["花费"],0)
+            fig_roi_hist = px.histogram(temp_df.query("ROI<20"), x="ROI", title="ROI分布(过滤>20极端值)", nbins=20)
+            st.plotly_chart(fig_roi_hist, use_container_width=True)
 
     keep_cols = ["日期","花费","展现量","点击量","成交金额","成交笔数","加购数","收藏数","推广类型","关键词","人群包名称","商品名称","商品ID"]
     exist_cols = [c for c in keep_cols if c in df_raw.columns]
@@ -181,7 +213,7 @@ if len(df_raw_list)>0:
                 crowd_sug.append(get_suggest(d,roi_target,min_cost))
             df_crowd_sum = pd.concat([df_crowd_sum,pd.DataFrame(crowd_sug)],axis=1)
 
-    # =========大盘指标【修复：全部做列存在判断】 =========
+    # =========大盘指标【全部做列存在判断】 =========
     total_cost = df["花费"].sum() if "花费" in df.columns else 0
     total_gmv = df["成交金额"].sum() if "成交金额" in df.columns else 0
     total_roi = total_gmv / total_cost if total_cost>0 else 0
@@ -293,7 +325,8 @@ if len(df_raw_list)>0:
         st.download_button("📥下载筛选后明细",data=df_filter_view.to_csv(index=False,encoding="utf-8-sig"),file_name="万相台_筛选明细.csv")
 
     with tab6:
-        st.subheader("📈日度时间趋势（需要报表包含【日期】列，支持多文件上传）")
+        st.subheader("📈日度时间趋势")
+        st.info("💡提示：单份报表只有下载选定的那一天数据；需要多日趋势，把**每一天分别导出的报表，多选一起上传**，并且报表要勾选【日期】字段。")
         if "日期" in df.columns and "花费" in df.columns:
             df["日期"] = pd.to_datetime(df["日期"], errors="coerce")
             day_agg = {}
@@ -313,7 +346,7 @@ if len(df_raw_list)>0:
                 fig_t2.add_hline(y=roi_target, line_dash="dash", color="red")
                 st.plotly_chart(fig_t2, use_container_width=True)
         else:
-            st.info("⚠️报表缺少【日期】字段，无法绘制趋势；导出报表勾选日期字段，多份日报表一起上传。")
+            st.warning("⚠️报表缺少【日期】字段，无法绘制趋势；导出报表勾选日期字段，多份日报表一起上传。")
 
     # =========投放操作记录表单 =========
     st.markdown("---")
