@@ -4,13 +4,13 @@ import plotly.express as px
 import numpy as np
 from datetime import datetime
 
-st.set_page_config(page_title="万相台投放工作台V4", layout="wide")
-st.title("📊万相台推广数据分析 & 自动优化策略V4")
+st.set_page_config(page_title="万相台投放工作台V5｜计划‑商品维度", layout="wide")
+st.title("📊万相台推广数据分析 & 自动优化策略V5")
 
 # 会话存储：投放操作记录
 if "action_log" not in st.session_state:
     st.session_state.action_log = pd.DataFrame(
-        columns=["操作时间","推广类型","对象名称","执行动作","调整内容","备注"]
+        columns=["操作时间","推广计划名称","推广类型","对象名称","执行动作","调整内容","备注"]
     )
 
 # ----------------------侧边栏配置 ----------------------
@@ -42,13 +42,13 @@ def get_suggest(row, target_roi, min_spend):
     if click <=0:
         return {"等级":"🟡零点击","策略":"有展现无点击，检查素材/人群","执行":"降出价或优化素材"}
     if roi >= target_roi:
-        return {"等级":"✅优质可放大","策略":"投产达标，可以放大拿量","执行":"预算+10~20%，小幅抬高出价"}
+        return {"等级":"✅优质可放大","策略":"投产达标，可以放大拿量","执行":"本计划内该商品预算+10~20%，小幅抬高出价"}
     elif roi>0 and roi < target_roi*0.6 and cost> min_spend*3:
-        return {"等级":"🔻高花费低ROI","策略":"花费高投产差，浪费预算","执行":"降价30%或直接暂停"}
+        return {"等级":"🔻高花费低ROI","策略":"花费高投产差，浪费本计划预算","执行":"本计划内降价30%或移出该计划"}
     elif roi>0 and roi < target_roi:
-        return {"等级":"⚠️观察待优化","策略":"略低于保本目标，小幅压价观察","执行":"出价下调10-20%观察2-3天"}
+        return {"等级":"⚠️观察待优化","策略":"略低于保本目标，小幅压价观察","执行":"本计划内出价下调10‑20%观察2‑3天"}
     else:
-        return {"等级":"🔴无成交","策略":"有花费无订单产出","执行":"优先降价，无改善直接暂停"}
+        return {"等级":"🔴无成交","策略":"有花费无订单产出","执行":"本计划优先降价，无改善移出计划"}
 
 def get_warn(row, warn_max_cpc, warn_min_ctr):
     warns = []
@@ -80,11 +80,11 @@ if upload_file:
 if len(df_raw_list)>0:
     df_raw = pd.concat(df_raw_list, ignore_index=True)
 
-    # =========【升级】原始文件概览信息 =========
+    # =========原始文件概览信息 =========
     st.subheader("📄原始文件概览")
     total_rows = len(df_raw)
     all_cols = list(df_raw.columns)
-    key_required = ["花费","成交金额","点击量","日期","商品ID","商品名称","关键词","人群包名称"]
+    key_required = ["推广计划名称","花费","成交金额","点击量","日期","商品ID","商品名称","关键词","人群包名称"]
     missing_key = [c for c in key_required if c not in all_cols]
 
     c_info1,c_info2 = st.columns(2)
@@ -93,7 +93,7 @@ if len(df_raw_list)>0:
         st.markdown(f"识别字段：`{', '.join(all_cols)}`")
     with c_info2:
         if len(missing_key)>0:
-            st.warning(f"⚠️缺失关键字段：{', '.join(missing_key)}，对应功能将不可用")
+            st.warning(f"⚠️缺失关键字段：{', '.join(missing_key)}，对应功能将不可用。【推广计划名称】缺失则无法按计划‑商品分析！")
         else:
             st.success("✅全部关键字段已识别")
 
@@ -114,7 +114,7 @@ if len(df_raw_list)>0:
             fig_roi_hist = px.histogram(temp_df.query("ROI<20"), x="ROI", title="ROI分布(过滤>20极端值)", nbins=20)
             st.plotly_chart(fig_roi_hist, use_container_width=True)
 
-    keep_cols = ["日期","花费","展现量","点击量","成交金额","成交笔数","加购数","收藏数","推广类型","关键词","人群包名称","商品名称","商品ID"]
+    keep_cols = ["推广计划名称","日期","花费","展现量","点击量","成交金额","成交笔数","加购数","收藏数","推广类型","关键词","人群包名称","商品名称","商品ID"]
     exist_cols = [c for c in keep_cols if c in df_raw.columns]
     df = df_raw[exist_cols].copy()
 
@@ -138,7 +138,36 @@ if len(df_raw_list)>0:
     df_w = pd.DataFrame(warn_out)
     df_detail = pd.concat([df.reset_index(drop=True), df_s, df_w], axis=1)
 
-    # =========商品汇总 =========
+    # =========【重点新增】计划‑商品汇总（同一商品，不同计划分开统计，日常优化主表）=========
+    df_plan_item_sum = pd.DataFrame()
+    group_keys_plan_item = []
+    if "推广计划名称" in df.columns:
+        group_keys_plan_item.append("推广计划名称")
+    if "商品ID" in df.columns:
+        group_keys_plan_item.append("商品ID")
+    if "商品名称" in df.columns:
+        group_keys_plan_item.append("商品名称")
+
+    if len(group_keys_plan_item)>=2:
+        agg_plan_item = {}
+        if "花费" in df.columns: agg_plan_item["总花费"]=("花费","sum")
+        if "成交金额" in df.columns: agg_plan_item["总成交金额"]=("成交金额","sum")
+        if "点击量" in df.columns: agg_plan_item["总点击"]=("点击量","sum")
+        if "展现量" in df.columns: agg_plan_item["总展现"]=("展现量","sum")
+        if "成交笔数" in df.columns: agg_plan_item["总成交笔数"]=("成交笔数","sum")
+        if agg_plan_item:
+            df_plan_item_sum = df.groupby(group_keys_plan_item, dropna=False).agg(**agg_plan_item).reset_index()
+            if "总花费" in df_plan_item_sum.columns and "总成交金额" in df_plan_item_sum.columns:
+                df_plan_item_sum["整体ROI"] = np.where(df_plan_item_sum["总花费"]>0, df_plan_item_sum["总成交金额"]/df_plan_item_sum["总花费"],0)
+            if "总点击" in df_plan_item_sum.columns and "总花费" in df_plan_item_sum.columns:
+                df_plan_item_sum["平均CPC"] = np.where(df_plan_item_sum["总点击"]>0, df_plan_item_sum["总花费"]/df_plan_item_sum["总点击"],0)
+            pi_sug = []
+            for _,r in df_plan_item_sum.iterrows():
+                d={"花费":r.get("总花费",0),"ROI":r.get("整体ROI",0),"点击量":r.get("总点击",0)}
+                pi_sug.append(get_suggest(d,roi_target,min_cost))
+            df_plan_item_sum = pd.concat([df_plan_item_sum,pd.DataFrame(pi_sug)],axis=1)
+
+    # =========全局商品汇总（全部计划合并，仅看宝贝潜力，保留旧功能） =========
     group_keys_prod = []
     if "商品ID" in df.columns:
         group_keys_prod.append("商品ID")
@@ -147,16 +176,11 @@ if len(df_raw_list)>0:
     df_prod_sum = pd.DataFrame()
     if len(group_keys_prod)>=1:
         agg_dict = {}
-        if "花费" in df.columns:
-            agg_dict["总花费"]=("花费","sum")
-        if "成交金额" in df.columns:
-            agg_dict["总成交金额"]=("成交金额","sum")
-        if "点击量" in df.columns:
-            agg_dict["总点击"]=("点击量","sum")
-        if "展现量" in df.columns:
-            agg_dict["总展现"]=("展现量","sum")
-        if "成交笔数" in df.columns:
-            agg_dict["总成交笔数"]=("成交笔数","sum")
+        if "花费" in df.columns: agg_dict["总花费"]=("花费","sum")
+        if "成交金额" in df.columns: agg_dict["总成交金额"]=("成交金额","sum")
+        if "点击量" in df.columns: agg_dict["总点击"]=("点击量","sum")
+        if "展现量" in df.columns: agg_dict["总展现"]=("展现量","sum")
+        if "成交笔数" in df.columns: agg_dict["总成交笔数"]=("成交笔数","sum")
         if agg_dict:
             df_prod_sum = df.groupby(group_keys_prod, dropna=False).agg(**agg_dict).reset_index()
             if "总花费" in df_prod_sum.columns and "总成交金额" in df_prod_sum.columns:
@@ -165,11 +189,7 @@ if len(df_raw_list)>0:
                 df_prod_sum["平均CPC"] = np.where(df_prod_sum["总点击"]>0, df_prod_sum["总花费"]/df_prod_sum["总点击"],0)
             prod_sug = []
             for _,r in df_prod_sum.iterrows():
-                d = {
-                    "花费":r.get("总花费",0),
-                    "ROI":r.get("整体ROI",0),
-                    "点击量":r.get("总点击",0)
-                }
+                d={"花费":r.get("总花费",0),"ROI":r.get("整体ROI",0),"点击量":r.get("总点击",0)}
                 prod_sug.append(get_suggest(d,roi_target,min_cost))
             df_prod_sum = pd.concat([df_prod_sum, pd.DataFrame(prod_sug)],axis=1)
 
@@ -213,7 +233,7 @@ if len(df_raw_list)>0:
                 crowd_sug.append(get_suggest(d,roi_target,min_cost))
             df_crowd_sum = pd.concat([df_crowd_sum,pd.DataFrame(crowd_sug)],axis=1)
 
-    # =========大盘指标【全部做列存在判断】 =========
+    # =========大盘指标 =========
     total_cost = df["花费"].sum() if "花费" in df.columns else 0
     total_gmv = df["成交金额"].sum() if "成交金额" in df.columns else 0
     total_roi = total_gmv / total_cost if total_cost>0 else 0
@@ -254,10 +274,11 @@ if len(df_raw_list)>0:
         fig_chan.add_hline(y=roi_target, line_dash="dash", line_color="red")
         st.plotly_chart(fig_chan, use_container_width=True)
 
-    # =========选项卡 =========
-    tab1,tab2,tab3,tab4,tab5,tab6 = st.tabs([
+    # =========选项卡【新增计划‑商品放在第二位，作为主工作面板】 =========
+    tab1,tab2,tab3,tab4,tab5,tab6,tab7 = st.tabs([
         "📊大盘&诊断",
-        "📦商品汇总",
+        "📋计划‑商品汇总【日常优化优先看】",
+        "📦全局商品汇总(全部计划合并)",
         "🔑关键词优化(图)",
         "👥人群优化(图)",
         "🎯明细清单",
@@ -268,15 +289,33 @@ if len(df_raw_list)>0:
         st.markdown("本页面为大盘总览，上方已展示核心指标、等级统计、投放诊断、分渠道图表。")
 
     with tab2:
+        st.info("💡按【推广计划名称+商品】分组！同一个商品在不同计划会分开行，策略是针对**该计划内此商品**，用来直接后台操作。导出报表务必勾选【推广计划名称】")
+        if len(df_plan_item_sum)>0:
+            show_pi = group_keys_plan_item + ["总花费","总成交金额","整体ROI","总点击","平均CPC","等级","策略","执行"]
+            show_pi_real = [x for x in show_pi if x in df_plan_item_sum.columns]
+            st.dataframe(df_plan_item_sum[show_pi_real].round(2), use_container_width=True, hide_index=True)
+            st.download_button("📥下载计划‑商品汇总CSV",data=df_plan_item_sum.to_csv(index=False,encoding="utf-8-sig"),file_name="万相台_计划商品汇总.csv")
+
+            #简单TOP图表
+            pi_active = df_plan_item_sum[df_plan_item_sum["总花费"]>=min_cost].copy() if "总花费" in df_plan_item_sum.columns else df_plan_item_sum
+            if len(pi_active)>0 and "推广计划名称" in pi_active.columns and "总花费" in pi_active.columns:
+                st.markdown("#### TOP20 计划‑商品花费排行")
+                fig_pi = px.bar(pi_active.nlargest(20,"总花费"),x="总花费",y="推广计划名称",orientation="h",title="高消耗计划‑商品单元")
+                st.plotly_chart(fig_pi,use_container_width=True)
+        else:
+            st.warning("⚠️缺少【推广计划名称】或者商品字段，无法生成计划‑商品汇总！万相台下载报表弹窗勾选导出【推广计划名称】。")
+
+    with tab3:
+        st.info("⚠️【全局商品汇总】把同一个商品**全部计划数据合并**，只看宝贝整体潜力，不区分计划，不建议直接拿这个做后台操作！优先使用上一个「计划‑商品汇总」。")
         if len(df_prod_sum)>0:
             show_p = group_keys_prod + ["总花费","总成交金额","整体ROI","总点击","平均CPC","等级","策略","执行"]
             show_p_real = [x for x in show_p if x in df_prod_sum.columns]
             st.dataframe(df_prod_sum[show_p_real].round(2), use_container_width=True, hide_index=True)
-            st.download_button("📥下载商品汇总CSV",data=df_prod_sum.to_csv(index=False,encoding="utf-8-sig"),file_name="万相台_商品汇总.csv")
+            st.download_button("📥下载全局商品汇总CSV",data=df_prod_sum.to_csv(index=False,encoding="utf-8-sig"),file_name="万相台_全局商品汇总.csv")
         else:
             st.info("缺少商品ID/商品名称，无法生成商品汇总")
 
-    with tab3:
+    with tab4:
         if len(df_kw_sum)>0:
             kw_eff = df_kw_sum[df_kw_sum["总花费"]>=min_cost].copy() if "总花费" in df_kw_sum.columns else df_kw_sum
             st.subheader("🔑关键词优化分析")
@@ -296,7 +335,7 @@ if len(df_raw_list)>0:
         else:
             st.info("报表无【关键词】列，请上传关键词推广报表")
 
-    with tab4:
+    with tab5:
         if len(df_crowd_sum)>0:
             crowd_eff = df_crowd_sum[df_crowd_sum["总花费"]>=min_cost].copy() if "总花费" in df_crowd_sum.columns else df_crowd_sum
             st.subheader("👥人群包优化分析")
@@ -317,14 +356,14 @@ if len(df_raw_list)>0:
         else:
             st.info("报表无【人群包名称】列，请上传人群运营报表")
 
-    with tab5:
+    with tab6:
         df_filter_view = df_detail[df_detail["等级"].isin(filter_level_list)]
-        show_d = ["推广类型","关键词","人群包名称","商品ID","商品名称","花费","成交金额","ROI","CPC","预警标记","等级","策略","执行"]
+        show_d = ["推广计划名称","推广类型","关键词","人群包名称","商品ID","商品名称","花费","成交金额","ROI","CPC","预警标记","等级","策略","执行"]
         d_real = [x for x in show_d if x in df_filter_view.columns]
         st.dataframe(df_filter_view[d_real].round(2), use_container_width=True, hide_index=True)
         st.download_button("📥下载筛选后明细",data=df_filter_view.to_csv(index=False,encoding="utf-8-sig"),file_name="万相台_筛选明细.csv")
 
-    with tab6:
+    with tab7:
         st.subheader("📈日度时间趋势")
         st.info("💡提示：单份报表只有下载选定的那一天数据；需要多日趋势，把**每一天分别导出的报表，多选一起上传**，并且报表要勾选【日期】字段。")
         if "日期" in df.columns and "花费" in df.columns:
@@ -348,25 +387,26 @@ if len(df_raw_list)>0:
         else:
             st.warning("⚠️报表缺少【日期】字段，无法绘制趋势；导出报表勾选日期字段，多份日报表一起上传。")
 
-    # =========投放操作记录表单 =========
+    # =========投放操作记录表单【增加推广计划名称输入】 =========
     st.markdown("---")
     st.subheader("📝投放操作记录（记录后台调整动作，刷新网页数据丢失，请及时导出）")
     with st.form("action_log_form"):
         f1,f2,f3 = st.columns(3)
         with f1:
-            t1 = st.text_input("推广类型")
-            t2 = st.text_input("对象名称（关键词/人群/商品ID）")
+            t_plan = st.text_input("推广计划名称")
+            t_obj = st.text_input("对象名称（关键词/人群/商品ID）")
         with f2:
-            act = st.selectbox("执行动作",["提升预算","降低预算","提高出价","降低出价","暂停单元","开启单元","修改创意","其他"])
+            act = st.selectbox("执行动作",["提升预算","降低预算","提高出价","降低出价","移出计划","暂停单元","开启单元","修改创意","其他"])
         with f3:
-            adj = st.text_input("调整内容，例：出价-20%")
+            adj = st.text_input("调整内容，例：出价‑20%，移出本计划")
             note = st.text_input("备注，例：观察3天")
         sub = st.form_submit_button("✅保存本次操作记录")
         if sub:
             new_log = {
                 "操作时间":datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                "推广类型":t1,
-                "对象名称":t2,
+                "推广计划名称":t_plan,
+                "推广类型":"",
+                "对象名称":t_obj,
                 "执行动作":act,
                 "调整内容":adj,
                 "备注":note
@@ -377,4 +417,4 @@ if len(df_raw_list)>0:
     st.download_button("📥导出全部操作记录", data=st.session_state.action_log.to_csv(index=False,encoding="utf-8-sig"), file_name="万相台_投放操作记录.csv")
 
 else:
-    st.info("👈上传报表，Excel表头【花费】，建议勾选：商品ID、商品名称；关键词、人群报表分别导出，可获得完整分析图表")
+    st.info("👈上传报表！万相台导出务必勾选：【推广计划名称、商品ID、商品名称、花费】；计划‑商品汇总依赖推广计划名称字段。")
