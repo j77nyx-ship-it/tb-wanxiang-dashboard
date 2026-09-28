@@ -47,10 +47,15 @@ def resolve_col(df, key):
 # ---------------- 侧边栏 ----------------
 with st.sidebar:
     st.header("⚙️ 阈值设置")
-    roi_target   = st.number_input("保本目标 ROI",      min_value=0.1, value=2.5,  step=0.1)
-    min_cost     = st.number_input("最小有效花费(元)",  min_value=0,   value=30,   step=5)
-    max_cpc_warn = st.number_input("CPC 过高预警(元)",  min_value=0.0, value=2.0,  step=0.1)
-    min_ctr_warn = st.number_input("CTR 过低预警",      min_value=0.001, value=0.02, step=0.001)
+    roi_target   = st.number_input("保本目标 ROI",      min_value=0.1,   value=3.0,   step=0.1)
+    min_cost     = st.number_input("最小有效花费(元)",  min_value=0,     value=15,    step=5)
+    max_cpc_warn = st.number_input("CPC 过高预警(元)",  min_value=0.0,   value=0.3,   step=0.05, format="%.2f")
+    min_ctr_warn = st.number_input("CTR 过低预警",      min_value=0.001, value=0.02,  step=0.001, format="%.3f")
+
+    st.caption(
+        f"当前策略：ROI目标 {roi_target} ｜ 最小花费 ¥{min_cost} "
+        f"｜ CPC预警 ¥{max_cpc_warn} ｜ CTR预警 {min_ctr_warn:.1%}"
+    )
 
     st.divider()
     st.header("🔍 全局筛选")
@@ -133,10 +138,10 @@ def build_normalized(df_raw):
     return out
 
 
-# ---------------- 向量化：策略 / 预警 ----------------
+# ---------------- 向量化：策略 ----------------
 def add_suggestions(df, target_roi, min_spend,
                     cost_col="花费", roi_col="ROI", click_col="点击量"):
-    """用 np.select 向量化生成 [等级/策略/执行] 三列，替代逐行 iterrows。"""
+    """用 np.select 向量化生成 [等级/策略/执行] 三列。"""
     if df.empty:
         df["等级"] = df["策略"] = df["执行"] = ""
         return df
@@ -168,22 +173,47 @@ def add_suggestions(df, target_roi, min_spend,
     return df
 
 
+# ---------------- 分级预警 ----------------
 def add_warnings(df, cpc_max, ctr_min):
+    """分级预警：
+       CPC  > cpc_max*3            -> 🚨CPC严重超标
+       CPC  > cpc_max              -> ⚠️CPC偏高
+       CTR  < ctr_min*0.5          -> 🚨CTR严重过低
+       CTR  < ctr_min (且>0)       -> ⚠️CTR偏低
+       标记：无异常 -> ✅正常；含🚨 -> 🚨严重；其余 -> ⚠️预警
+    """
     if df.empty:
         df["预警标记"] = df["预警说明"] = ""
         return df
+
     cpc = pd.to_numeric(df["CPC"], errors="coerce").fillna(0).values
     ctr = pd.to_numeric(df["CTR"], errors="coerce").fillna(0).values
-    msgs = []
+
+    msgs, tags = [], []
+    cpc_severe = cpc_max * 3
+    ctr_severe = ctr_min * 0.5
+
     for c, t in zip(cpc, ctr):
         w = []
-        if c > cpc_max:
-            w.append(f"CPC过高 {c:.2f}")
-        if 0 < t < ctr_min:
-            w.append(f"CTR过低 {t:.2%}")
-        msgs.append("；".join(w) if w else "无异常")
+        if c > cpc_severe:
+            w.append(f"🚨CPC严重超标 {c:.2f}")
+        elif c > cpc_max:
+            w.append(f"⚠️CPC偏高 {c:.2f}")
+
+        if 0 < t < ctr_severe:
+            w.append(f"🚨CTR严重过低 {t:.2%}")
+        elif 0 < t < ctr_min:
+            w.append(f"⚠️CTR偏低 {t:.2%}")
+
+        if not w:
+            msgs.append("无异常")
+            tags.append("✅正常")
+        else:
+            msgs.append("；".join(w))
+            tags.append("🚨严重" if any("🚨" in x for x in w) else "⚠️预警")
+
     df["预警说明"] = msgs
-    df["预警标记"] = np.where(df["预警说明"] != "无异常", "🚨异常", "✅正常")
+    df["预警标记"] = tags
     return df
 
 
@@ -264,7 +294,7 @@ if date_range and len(date_range) == 2:
 if kw:
     dff = dff[dff["商品名称"].str.contains(kw, case=False, na=False)]
 
-# ---- 生成带建议/预警的明细 ----
+# ---- 生成带建议 / 预警的明细 ----
 df_detail = add_suggestions(dff.copy(), roi_target, min_cost)
 df_detail = add_warnings(df_detail, max_cpc_warn, min_ctr_warn)
 
@@ -296,12 +326,15 @@ c4.metric("总点击",   f"{int(tclk):,}")
 gc = int((df_detail["等级"] == "✅优质可放大").sum())
 bc = int((df_detail["等级"] == "🔻高花费低ROI").sum())
 nc = int((df_detail["等级"] == "🔴无成交").sum())
+sc = int((df_detail["预警标记"] == "🚨严重").sum())
 
 if troi >= roi_target:
-    diag = f"✅ 整体 ROI ({troi:.2f}) 达标。优质 {gc} 个可放大；关注 {bc} 个高花费低投产。"
+    diag = (f"✅ 整体 ROI ({troi:.2f}) 达标。优质 {gc} 个可放大；"
+            f"关注 {bc} 个高花费低投产；严重预警 {sc} 个。")
 else:
-    diag = f"⚠️ 整体 ROI ({troi:.2f}) 低于 {roi_target}。优先处理 {bc} 个高花费低ROI；" \
-           f"优质 {gc} 个可放大；{nc} 个无成交建议关停。"
+    diag = (f"⚠️ 整体 ROI ({troi:.2f}) 低于 {roi_target}。"
+            f"优先处理 {bc} 个高花费低ROI；优质 {gc} 个可放大；"
+            f"{nc} 个无成交建议关停；严重预警 {sc} 个。")
 st.info(diag)
 
 # ==============================================================
@@ -415,7 +448,15 @@ with tab1:
         show = [c for c in ["商品ID", "商品名称", "总花费", "总成交金额",
                             "整体ROI", "总点击", "总加购", "等级", "策略", "执行"]
                 if c in view.columns]
-        st.dataframe(view[show].round(2), use_container_width=True, hide_index=True)
+        st.dataframe(
+            view[show].round(2),
+            use_container_width=True, hide_index=True,
+            column_config={
+                "总花费":     st.column_config.NumberColumn(format="¥%.2f"),
+                "总成交金额": st.column_config.NumberColumn(format="¥%.2f"),
+                "整体ROI":   st.column_config.NumberColumn(format="%.2f"),
+            },
+        )
         st.download_button("📥 下载待调整商品清单",
                            data=view.to_csv(index=False).encode("utf-8-sig"),
                            file_name="待调整商品清单.csv", mime="text/csv")
@@ -468,12 +509,35 @@ with tab6:
 # ---------- Tab 7: 明细 / 趋势 / 记录 ----------
 with tab7:
     st.markdown("### 🎯 明细清单")
-    dv = df_detail[df_detail["等级"].isin(filter_levels)] if filter_levels else df_detail
+
+    # 预警级别多选
+    warn_filter = st.multiselect(
+        "预警级别筛选",
+        ["🚨严重", "⚠️预警", "✅正常"],
+        default=["🚨严重", "⚠️预警", "✅正常"],
+        key="warn_filter",
+    )
+    dv = df_detail.copy()
+    if filter_levels:
+        dv = dv[dv["等级"].isin(filter_levels)]
+    if warn_filter and "预警标记" in dv.columns:
+        dv = dv[dv["预警标记"].isin(warn_filter)]
+
     show = [c for c in ["日期", "商品ID", "商品名称", "计划名称", "关键词", "人群包名称",
-                        "花费", "成交金额", "ROI", "CPC", "加购数",
-                        "预警标记", "等级", "策略", "执行"]
+                        "花费", "成交金额", "ROI", "CPC", "CTR", "加购数",
+                        "预警标记", "预警说明", "等级", "策略", "执行"]
             if c in dv.columns]
-    st.dataframe(dv[show].round(2), use_container_width=True, hide_index=True)
+    st.dataframe(
+        dv[show].round(3),
+        use_container_width=True, hide_index=True,
+        column_config={
+            "花费":     st.column_config.NumberColumn(format="¥%.2f"),
+            "成交金额": st.column_config.NumberColumn(format="¥%.2f"),
+            "ROI":     st.column_config.NumberColumn(format="%.2f"),
+            "CPC":     st.column_config.NumberColumn(format="¥%.3f"),
+            "CTR":     st.column_config.NumberColumn(format="%.2f%%"),
+        },
+    )
     st.download_button("📥 下载筛选明细",
                        data=dv.to_csv(index=False).encode("utf-8-sig"),
                        file_name="筛选明细.csv", mime="text/csv")
