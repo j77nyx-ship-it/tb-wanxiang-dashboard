@@ -1,302 +1,231 @@
-import streamlit as st
-import pandas as pd
-import plotly.express as px
+# app.py
+import io
 import numpy as np
-from datetime import datetime
+import pandas as pd
+import streamlit as st
+import plotly.express as px
 
-st.set_page_config(page_title="万相台投放工作台V8‑fix", layout="wide")
-st.title("📊万相台推广数据分析 & 自动优化策略V8‑fix")
+st.set_page_config(
+    page_title="商品报表分析看板",
+    page_icon="📊",
+    layout="wide",
+    initial_sidebar_state="expanded",
+)
 
-if "action_log" not in st.session_state:
-    st.session_state.action_log = pd.DataFrame(columns=["操作时间","推广类型","对象名称","执行动作","调整内容","备注"])
+# ---------- 1. 数据加载与缓存 ----------
+@st.cache_data(show_spinner="正在解析报表...")
+def load_data(file_bytes: bytes) -> pd.DataFrame:
+    df = pd.read_excel(io.BytesIO(file_bytes), sheet_name=0)
+    return df
 
-with st.sidebar:
-    st.header("⚙️阈值设置")
-    roi_target = st.number_input("保本目标ROI", min_value=0.1, value=2.5, step=0.1)
-    min_cost = st.number_input("最小有效花费(元)", min_value=0, value=30, step=5)
-    max_cpc_warn = st.number_input("CPC过高预警(元)", min_value=0.0, value=2.0, step=0.1)
-    min_ctr_warn = st.number_input("CTR过低预警", min_value=0.001, value=0.02, step=0.001)
-    st.divider()
-    st.header("🔍明细表格筛选")
-    filter_level_list = st.multiselect("筛选策略等级",
-        ["✅优质可放大","⚠️观察待优化","🔻高花费低ROI","🟡样本不足","🔴无成交"],
-        default=["✅优质可放大","⚠️观察待优化","🔻高花费低ROI","🔴无成交"])
-    upload_file = st.file_uploader("上传万相台Excel/Csv报表，可多选", type=["xlsx","xls","csv"], accept_multiple_files=True)
+@st.cache_data(show_spinner=False)
+def clean_data(df: pd.DataFrame) -> pd.DataFrame:
+    df = df.copy()
+    df.columns = [str(c).strip() for c in df.columns]
 
-def get_suggest(row, target_roi, min_spend):
-    cost = row.get("花费",0); roi = row.get("ROI",0); click = row.get("点击量",0)
-    if np.isinf(roi) or np.isnan(roi): roi = 0
-    if cost < min_spend: return {"等级":"🟡样本不足","策略":"花费少继续观察","执行":"无操作"}
-    if click <=0: return {"等级":"🟡零点击","策略":"有展现无点击","执行":"降出价或优化素材"}
-    if roi >= target_roi: return {"等级":"✅优质可放大","策略":"投产达标可放大","执行":"预算+10~20%，小幅抬高出价"}
-    elif roi>0 and roi < target_roi*0.6 and cost>min_spend*3: return {"等级":"🔻高花费低ROI","策略":"花费高投产差","执行":"降价30%或暂停"}
-    elif roi>0 and roi < target_roi: return {"等级":"⚠️观察待优化","策略":"略低于目标","执行":"出价下调10-20%观察"}
-    else: return {"等级":"🔴无成交","策略":"有花费无订单","执行":"降价，无改善暂停"}
+    # 日期
+    if "日期" in df.columns:
+        df["日期"] = pd.to_datetime(df["日期"], errors="coerce")
 
-def get_warn(row, wmax, wmin):
-    warns=[]
-    cpc=row.get("CPC",0); ctr=row.get("CTR",0)
-    if cpc>wmax: warns.append(f"CPC过高{cpc:.2f}")
-    if 0<ctr<wmin: warns.append(f"CTR过低{ctr:.2%}")
-    if warns: return {"预警标记":"🚨异常","预警说明":"；".join(warns)}
-    return {"预警标记":"✅正常","预警说明":"无异常"}
+    # 把所有可能的数值列统一处理
+    num_cols = [
+        "展现量", "点击量", "花费", "点击率", "平均点击花费", "千次展现花费",
+        "总预售成交金额", "总预售成交笔数", "直接预售成交金额", "直接预售成交笔数",
+        "间接预售成交金额", "间接预售成交笔数",
+        "直接成交金额", "间接成交金额", "总成交金额", "总成交笔数",
+        "直接成交笔数", "间接成交笔数", "点击转化率", "投入产出比", "含预售投产比",
+        "总成交成本", "总购物车数", "直接购物车数", "间接购物车数", "加购率",
+        "收藏宝贝数", "收藏店铺数", "店铺收藏成本", "总收藏加购数", "总收藏加购成本",
+        "宝贝收藏加购数", "宝贝收藏加购成本", "总收藏数", "宝贝收藏成本", "宝贝收藏率",
+        "加购成本", "拍下订单笔数", "拍下订单金额", "直接收藏宝贝数", "间接收藏宝贝数",
+        "优惠券领取量", "购物金充值笔数", "购物金充值金额", "旺旺咨询量",
+        "引导访问量", "引导访问人数", "引导访问潜客数", "引导访问潜客占比",
+        "入会率", "入会量", "引导访问率", "深度访问量", "平均访问页面数",
+        "成交新客数", "成交新客占比", "会员首购人数", "会员成交金额", "会员成交笔数",
+        "成交人数", "人均成交笔数", "人均成交金额",
+        "自然流量转化金额", "自然流量曝光量",
+        "平台助推总成交", "平台助推直接成交", "平台助推点击",
+        "平台补贴金额", "补贴引导成交金额", "发券补贴商品个数", "补贴引导成交人数",
+    ]
+    for col in num_cols:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
 
-def resolve_col(df, aliases):
-    for a in aliases:
-        if a in df.columns: return a
-    return None
+    # 文本列清理
+    for col in ["主体ID", "主体类型", "主体名称"]:
+        if col in df.columns:
+            df[col] = df[col].astype(str).str.strip()
 
-frames=[]
-if upload_file:
-    for f in upload_file:
-        try:
-            tmp = pd.read_csv(f) if f.name.endswith(".csv") else pd.read_excel(f)
-            tmp.columns=[str(c).strip() for c in tmp.columns]
-            frames.append(tmp)
-        except Exception as e:
-            st.warning(f"文件{f.name}读取失败:{e}")
+    return df
 
-if frames:
-    df_raw = pd.concat(frames, ignore_index=True)
-    st.subheader("📄原始文件概览")
-    st.metric("合并总行数", f"{len(df_raw):,}")
-    st.markdown("识别字段：`"+", ".join(list(df_raw.columns))+"`")
-    st.dataframe(df_raw.head(8), hide_index=True)
 
-    out = pd.DataFrame()
-    out["日期"] = df_raw[resolve_col(df_raw,["日期"])] if resolve_col(df_raw,["日期"]) else ""
-    out["商品ID"] = df_raw[resolve_col(df_raw,["主体ID","商品ID"])] if resolve_col(df_raw,["主体ID","商品ID"]) else ""
-    out["商品名称"] = df_raw[resolve_col(df_raw,["主体名称","商品名称","宝贝名称"])] if resolve_col(df_raw,["主体名称","商品名称","宝贝名称"]) else ""
-    out["计划名称"] = df_raw[resolve_col(df_raw,["计划名字","计划名称","推广计划名称"])] if resolve_col(df_raw,["计划名字","计划名称","推广计划名称"]) else ""
-    out["场景名称"] = df_raw[resolve_col(df_raw,["场景名字","场景名称"])] if resolve_col(df_raw,["场景名字","场景名称"]) else ""
-    out["关键词"] = df_raw[resolve_col(df_raw,["关键词","词"])] if resolve_col(df_raw,["关键词","词"]) else ""
-    out["人群包名称"] = df_raw[resolve_col(df_raw,["人群包名称"])] if resolve_col(df_raw,["人群包名称"]) else ""
+def fmt_pct(x):
+    try:
+        return f"{x*100:.2f}%"
+    except Exception:
+        return "-"
 
-    c_cost=resolve_col(df_raw,["花费"]); c_gmv=resolve_col(df_raw,["总成交金额","成交金额","净成交金额"])
-    c_order=resolve_col(df_raw,["总成交笔数","成交笔数"]); c_click=resolve_col(df_raw,["点击量"])
-    c_show=resolve_col(df_raw,["展现量"]); c_cart=resolve_col(df_raw,["总购物车数","加购数"])
-    c_fav=resolve_col(df_raw,["收藏宝贝数","收藏数"])
-    c_roi=resolve_col(df_raw,["投入产出比","实际投产比","投产比","ROI"])
-    c_cpc=resolve_col(df_raw,["平均点击花费"]); c_ctr=resolve_col(df_raw,["点击率"])
 
-    out["花费"]=pd.to_numeric(df_raw[c_cost],errors="coerce").fillna(0) if c_cost else 0
-    out["成交金额"]=pd.to_numeric(df_raw[c_gmv],errors="coerce").fillna(0) if c_gmv else 0
-    out["成交笔数"]=pd.to_numeric(df_raw[c_order],errors="coerce").fillna(0) if c_order else 0
-    out["点击量"]=pd.to_numeric(df_raw[c_click],errors="coerce").fillna(0) if c_click else 0
-    out["展现量"]=pd.to_numeric(df_raw[c_show],errors="coerce").fillna(0) if c_show else 0
-    out["加购数"]=pd.to_numeric(df_raw[c_cart],errors="coerce").fillna(0) if c_cart else 0
-    out["收藏数"]=pd.to_numeric(df_raw[c_fav],errors="coerce").fillna(0) if c_fav else 0
+# ---------- 2. 侧边栏上传 ----------
+st.sidebar.header("📁 数据源")
+uploaded = st.sidebar.file_uploader("上传商品报表 Excel", type=["xlsx", "xls"])
 
-    if c_roi:
-        out["ROI"]=pd.to_numeric(df_raw[c_roi],errors="coerce").fillna(0).replace([float("inf")],0)
-    else:
-        out["ROI"]=np.where(out["花费"]>0,out["成交金额"]/out["花费"],0)
-    if c_cpc: out["CPC"]=pd.to_numeric(df_raw[c_cpc],errors="coerce").fillna(0)
-    else: out["CPC"]=np.where(out["点击量"]>0,out["花费"]/out["点击量"],0)
-    if c_ctr: out["CTR"]=pd.to_numeric(df_raw[c_ctr],errors="coerce").fillna(0)
-    else: out["CTR"]=np.where(out["展现量"]>0,out["点击量"]/out["展现量"],0)
+# 若没有上传,尝试用同目录下的默认文件
+if uploaded is not None:
+    raw = uploaded.getvalue()
+else:
+    default_path = "商品报表_20260928_112241.xlsx"
+    try:
+        with open(default_path, "rb") as f:
+            raw = f.read()
+    except FileNotFoundError:
+        st.warning("请先在左侧上传 Excel 文件。")
+        st.stop()
 
-    df = out.reset_index(drop=True)
-    if not c_gmv: st.warning("⚠️未识别成交金额列(总成交金额)，成交/ROI为0")
-    if not c_cost: st.warning("⚠️未识别花费列")
+df_raw = load_data(raw)
+df = clean_data(df_raw)
 
-    df_detail = pd.concat([df.reset_index(drop=True),
-        pd.DataFrame([get_suggest(r,roi_target,min_cost) for _,r in df.iterrows()]),
-        pd.DataFrame([get_warn(r,max_cpc_warn,min_ctr_warn) for _,r in df.iterrows()])], axis=1)
+# ---------- 3. 侧边栏筛选 ----------
+st.sidebar.header("🔎 筛选条件")
 
-    def group_sum(grp_keys, name_roi, name_cpc):
-        agg={}
-        if "花费" in df.columns: agg["总花费"]=("花费","sum")
-        if "成交金额" in df.columns: agg["总成交金额"]=("成交金额","sum")
-        if "点击量" in df.columns: agg["总点击"]=("点击量","sum")
-        if "展现量" in df.columns: agg["总展现"]=("展现量","sum")
-        if "加购数" in df.columns: agg["总加购"]=("加购数","sum")
-        if "收藏数" in df.columns: agg["总收藏"]=("收藏数","sum")
-        if not agg or not grp_keys: return pd.DataFrame()
-        g = df.groupby(grp_keys,dropna=False).agg(**agg).reset_index()
-        if "总花费" in g.columns and "总成交金额" in g.columns:
-            g[name_roi]=np.where(g["总花费"]>0,g["总成交金额"]/g["总花费"],0)
-        if "总点击" in g.columns and "总花费" in g.columns:
-            g[name_cpc]=np.where(g["总点击"]>0,g["总花费"]/g["总点击"],0)
-        sug=[get_suggest({"花费":r["总花费"],"ROI":r[name_roi],"点击量":r["总点击"]},roi_target,min_cost) for _,r in g.iterrows()]
-        return pd.concat([g,pd.DataFrame(sug)],axis=1)
+if "日期" in df.columns:
+    min_d, max_d = df["日期"].min(), df["日期"].max()
+    date_range = st.sidebar.date_input(
+        "日期范围",
+        value=(min_d.date(), max_d.date()),
+        min_value=min_d.date(),
+        max_value=max_d.date(),
+    )
+else:
+    date_range = None
 
-    df_prod_sum = group_sum([k for k in ["商品ID","商品名称"] if k in df.columns], "整体ROI","平均CPC")
-    df_plan_sum = group_sum([k for k in ["计划名称","场景名称"] if k in df.columns], "整体ROI","平均CPC")
-    df_kw_sum = group_sum([k for k in ["关键词"] if k in df.columns and df["关键词"].astype(str).str.strip().ne("").any()], "ROI","CPC")
-    df_crowd_sum = group_sum([k for k in ["人群包名称"] if k in df.columns and df["人群包名称"].astype(str).str.strip().ne("").any()], "ROI","CPC")
-    pk_keys=[k for k in ["商品名称","商品ID"] if k in df.columns]
-    df_item_kw = pd.DataFrame()
-    if pk_keys and "关键词" in df.columns and df["关键词"].astype(str).str.strip().ne("").any():
-        df_item_kw = group_sum(pk_keys+["关键词"], "ROI","CPC")
+keyword = st.sidebar.text_input("商品名称关键词", "")
+only_spend = st.sidebar.checkbox("只看有花费的商品", value=False)
+only_deal  = st.sidebar.checkbox("只看有成交的商品", value=False)
 
-    # 大盘
-    tc=df["花费"].sum(); tg=df["成交金额"].sum(); troi=tg/tc if tc>0 else 0; tclk=df["点击量"].sum()
-    st.markdown("---")
-    c1,c2,c3,c4=st.columns(4)
-    with c1: st.metric("总花费",f"{tc:.2f}元")
-    with c2: st.metric("总GMV",f"{tg:.2f}元")
-    with c3: st.metric("整体ROI",f"{troi:.2f}",delta=f"目标{roi_target}")
-    with c4: st.metric("总点击",f"{int(tclk):,}")
-    st.markdown("#### 🚨单元等级统计")
-    stat=df_detail["等级"].value_counts().reset_index(); stat.columns=["等级","数量"]
-    st.dataframe(stat, hide_index=True)
-    gc=len(df_detail[df_detail["等级"]=="✅优质可放大"]); bc=len(df_detail[df_detail["等级"]=="🔻高花费低ROI"]); nc=len(df_detail[df_detail["等级"]=="🔴无成交"])
-    if troi>=roi_target: diag=f"✅整体ROI({troi:.2f})达标。优质{gc}个可放大；关注{bc}个高花费低投产。"
-    else: diag=f"⚠️整体ROI({troi:.2f})低于{roi_target}。优先处理{bc}个高花费低ROI；优质{gc}个可放大；{nc}个无成交建议关停。"
-    st.info(diag)
+top_n = st.sidebar.slider("排行榜 Top N", 5, 50, 10)
 
-    need_levels = ["🔻高花费低ROI","🔴无成交","⚠️观察待优化","🟡零点击"]
+# 应用筛选
+dff = df.copy()
+if date_range and len(date_range) == 2:
+    start, end = pd.to_datetime(date_range[0]), pd.to_datetime(date_range[1])
+    dff = dff[(dff["日期"] >= start) & (dff["日期"] <= end)]
+if keyword:
+    dff = dff[dff["主体名称"].str.contains(keyword, case=False, na=False)]
+if only_spend and "花费" in dff.columns:
+    dff = dff[dff["花费"] > 0]
+if only_deal and "总成交金额" in dff.columns:
+    dff = dff[dff["总成交金额"] > 0]
 
-    tab1,tab2,tab3,tab4,tab5,tab6,tab7 = st.tabs([
-        "🚨待调整商品(默认)","📦商品优化(图)","📋计划优化(图)","🎯商品×关键词",
-        "🔑关键词优化(图)","👥人群优化(图)","明细/趋势/记录"])
+# ---------- 4. 顶部 KPI ----------
+st.title("📊 商品报表分析看板")
+st.caption(f"当前筛选后共 {len(dff):,} 行 · 商品数 {dff['主体ID'].nunique() if '主体ID' in dff.columns else '-'}")
+
+def safe_sum(col):
+    return dff[col].sum() if col in dff.columns else 0
+
+total_spend = safe_sum("花费")
+total_gmv   = safe_sum("总成交金额")
+total_click = safe_sum("点击量")
+total_imp   = safe_sum("展现量")
+total_orders= safe_sum("总成交笔数")
+roi = (total_gmv / total_spend) if total_spend > 0 else 0
+ctr = (total_click / total_imp) if total_imp > 0 else 0
+
+c1, c2, c3, c4, c5, c6 = st.columns(6)
+c1.metric("总花费", f"¥{total_spend:,.2f}")
+c2.metric("总成交金额", f"¥{total_gmv:,.2f}")
+c3.metric("整体 ROI", f"{roi:.2f}")
+c4.metric("总展现量", f"{int(total_imp):,}")
+c5.metric("总点击量", f"{int(total_click):,}")
+c6.metric("总成交笔数", f"{int(total_orders):,}")
+
+st.divider()
+
+# ---------- 5. 趋势图 ----------
+if "日期" in dff.columns and dff["日期"].notna().any():
+    daily = (
+        dff.groupby("日期", as_index=False)[["花费", "总成交金额", "点击量", "展现量"]]
+        .sum()
+    )
+    daily["ROI"] = np.where(daily["花费"] > 0, daily["总成交金额"] / daily["花费"], 0)
+
+    tab1, tab2, tab3 = st.tabs(["💰 花费 / 成交", "📈 ROI 趋势", "👀 展现 / 点击"])
 
     with tab1:
-        st.info("💡默认展示【需要调整】的商品：高花费低ROI、无成交、观察待优化、零点击。优质可放大也算调整，可手动勾选。")
-        if len(df_prod_sum)>0:
-            avail_levels = [l for l in df_prod_sum["等级"].unique() if l in need_levels+["✅优质可放大"]]
-            sel = st.multiselect("展示等级（默认=需要调整）", avail_levels,
-                                 default=[l for l in need_levels if l in avail_levels])
-            view = df_prod_sum[df_prod_sum["等级"].isin(sel)] if sel else df_prod_sum
-            st.markdown(f"#### 当前展示 {len(view)} 个商品")
-            if len(view)>0:
-                f=px.bar(view.sort_values("总花费",ascending=False).head(20),x="商品名称",y="整体ROI",
-                         title="待调整商品 ROI 对比(红=保本)",text_auto=".2f",color="等级",
-                         color_discrete_map={"🔻高花费低ROI":"#e74c3c","🔴无成交":"#c0392b","⚠️观察待优化":"#f39c12","🟡零点击":"#95a5a6","✅优质可放大":"#2ecc71"})
-                f.add_hline(y=roi_target, line_dash="dash", line=dict(color="red"))
-                f.update_layout(xaxis_tickangle=-45)
-                st.plotly_chart(f,use_container_width=True)
-
-                key = view[view["等级"].isin(["🔻高花费低ROI","🔴无成交"])]
-                if len(key)>0:
-                    st.markdown("#### ⚠️重点：高花费低ROI + 无成交（优先处理）")
-                    fk=px.bar(key.sort_values("总花费",ascending=False),x="总花费",y="商品名称",orientation="h",
-                                           title="高花费低ROI/无成交商品花费",text_auto=".1f",color="等级",
-                                           color_discrete_map={"🔻高花费低ROI":"#e74c3c","🔴无成交":"#c0392b"})
-                    st.plotly_chart(fk,use_container_width=True)
-
-            show=[c for c in ["商品ID","商品名称","总花费","总成交金额","整体ROI","总点击","总加购","等级","策略","执行"] if c in view.columns]
-            st.dataframe(view[show].round(2),use_container_width=True,hide_index=True)
-            st.download_button("📥下载待调整商品清单",data=view.to_csv(index=False,encoding="utf-8-sig"),file_name="待调整商品清单.csv")
-        else: st.info("未识别商品列(主体名称/商品名称)")
-
+        fig = px.line(daily, x="日期", y=["花费", "总成交金额"], markers=True,
+                      title="每日花费与成交金额")
+        st.plotly_chart(fig, use_container_width=True)
     with tab2:
-        st.info("全部商品按等级筛选查看。")
-        if len(df_prod_sum)>0:
-            all_levels=list(df_prod_sum["等级"].unique())
-            sel2=st.multiselect("展示等级", all_levels, default=all_levels)
-            view2=df_prod_sum[df_prod_sum["等级"].isin(sel2)] if sel2 else df_prod_sum
-            if len(view2)>0:
-                pe=view2[view2["总花费"]>=min_cost]
-                if len(pe)>0:
-                    st.plotly_chart(px.bar(pe.nlargest(15,"总花费"),x="总花费",y="商品名称",orientation="h",title="TOP15商品花费",text_auto=".1f"),use_container_width=True)
-                    f2=px.bar(pe.sort_values("整体ROI",ascending=False).head(20),x="商品名称",y="整体ROI",title="商品ROI(红=保本)",text_auto=".2f",color="整体ROI",color_continuous_scale="RdYlGn")
-                    f2.add_hline(y=roi_target, line_dash="dash", line=dict(color="red"))
-                    f2.update_layout(xaxis_tickangle=-45)
-                    st.plotly_chart(f2,use_container_width=True)
-            show=[c for c in ["商品ID","商品名称","总花费","总成交金额","整体ROI","总点击","总加购","等级","策略","执行"] if c in df_prod_sum.columns]
-            st.dataframe(df_prod_sum[show].round(2),use_container_width=True,hide_index=True)
-            st.download_button("📥下载全部商品清单",data=df_prod_sum.to_csv(index=False,encoding="utf-8-sig"),file_name="全部商品清单.csv")
-        else: st.info("未识别商品列")
-
+        fig = px.line(daily, x="日期", y="ROI", markers=True, title="每日 ROI")
+        st.plotly_chart(fig, use_container_width=True)
     with tab3:
-        st.info("计划报表按计划汇总，看哪个计划烧钱、哪个计划ROI差。")
-        if len(df_plan_sum)>0:
-            pe=df_plan_sum[df_plan_sum["总花费"]>=min_cost].copy()
-            if len(pe)>0:
-                st.plotly_chart(px.bar(pe.nlargest(15,"总花费"),x="总花费",y="计划名称",orientation="h",title="TOP15计划花费",text_auto=".1f"),use_container_width=True)
-                f2=px.bar(pe.sort_values("整体ROI",ascending=False).head(20),x="计划名称",y="整体ROI",title="计划ROI(红=保本)",text_auto=".2f",color="整体ROI",color_continuous_scale="RdYlGn")
-                f2.add_hline(y=roi_target, line_dash="dash", line=dict(color="red"))
-                f2.update_layout(xaxis_tickangle=-45)
-                st.plotly_chart(f2,use_container_width=True)
-            show=[c for c in ["计划名称","场景名称","总花费","总成交金额","整体ROI","总点击","等级","策略","执行"] if c in df_plan_sum.columns]
-            st.dataframe(df_plan_sum[show].round(2),use_container_width=True,hide_index=True)
-            st.download_button("📥下载计划优化清单",data=df_plan_sum.to_csv(index=False,encoding="utf-8-sig"),file_name="计划优化清单.csv")
-        else: st.info("未识别计划列(计划名字/推广计划名称)")
+        fig = px.bar(daily, x="日期", y=["展现量", "点击量"], barmode="group",
+                     title="每日展现量与点击量")
+        st.plotly_chart(fig, use_container_width=True)
 
-    with tab4:
-        st.info("关键词数据明细报表用这个：每个商品×关键词一行，最精细的优化。需要导出「关键词数据明细」报表(含计划+商品+关键词)。")
-        if len(df_item_kw)>0:
-            pe=df_item_kw[df_item_kw["总花费"]>=min_cost].copy()
-            if len(pe)>0:
-                f2=px.bar(pe.sort_values("ROI",ascending=False).head(20),x="关键词",y="ROI",title="商品×关键词 ROI(红=保本)",text_auto=".2f",color="ROI",color_continuous_scale="RdYlGn")
-                f2.add_hline(y=roi_target, line_dash="dash", line=dict(color="red"))
-                f2.update_layout(xaxis_tickangle=-45)
-                st.plotly_chart(f2,use_container_width=True)
-                st.plotly_chart(px.bar(pe.nlargest(15,"总花费"),x="总花费",y="关键词",orientation="h",title="TOP15 商品×关键词花费",text_auto=".1f"),use_container_width=True)
-            show=[c for c in ["商品名称","商品ID","关键词","总花费","总成交金额","ROI","CPC","等级","策略","执行"] if c in df_item_kw.columns]
-            st.dataframe(df_item_kw[show].round(2),use_container_width=True,hide_index=True)
-            st.download_button("📥下载商品×关键词优化清单",data=df_item_kw.to_csv(index=False,encoding="utf-8-sig"),file_name="商品关键词优化清单.csv")
-        else: st.info("需要同时有【商品】和【关键词】列(来自关键词数据明细报表)。当前报表只有关键词，或只有商品。")
+st.divider()
 
-    with tab5:
-        if len(df_kw_sum)>0:
-            pe=df_kw_sum[df_kw_sum["总花费"]>=min_cost].copy()
-            if len(pe)>0:
-                st.plotly_chart(px.bar(pe.nlargest(15,"总花费"),x="总花费",y="关键词",orientation="h",title="TOP15关键词花费",text_auto=".1f"),use_container_width=True)
-                f2=px.bar(pe.sort_values("ROI",ascending=False).head(20),x="关键词",y="ROI",title="关键词ROI(红=保本)",text_auto=".2f")
-                f2.add_hline(y=roi_target, line_dash="dash", line=dict(color="red"))
-                f2.update_layout(xaxis_tickangle=-45)
-                st.plotly_chart(f2,use_container_width=True)
-            show=[c for c in ["关键词","总花费","总成交金额","ROI","CPC","等级","策略","执行"] if c in df_kw_sum.columns]
-            st.dataframe(df_kw_sum[show].round(2),use_container_width=True,hide_index=True)
-            st.download_button("📥下载关键词清单",data=df_kw_sum.to_csv(index=False,encoding="utf-8-sig"),file_name="关键词清单.csv")
-        else: st.info("报表无【关键词】列，请上传关键词数据明细报表")
+# ---------- 6. 商品排行榜 ----------
+st.subheader("🏆 商品排行榜")
 
-    with tab6:
-        if len(df_crowd_sum)>0:
-            pe=df_crowd_sum[df_crowd_sum["总花费"]>=min_cost].copy()
-            if len(pe)>0:
-                st.plotly_chart(px.bar(pe.sort_values("总花费",ascending=False).head(15),x="人群包名称",y=["总花费","总成交金额"],barmode="group",title="TOP15人群花费vs成交").update_layout(xaxis_tickangle=-45),use_container_width=True)
-                f2=px.bar(pe.sort_values("ROI",ascending=False).head(20),x="人群包名称",y="ROI",title="人群ROI(红=保本)",text_auto=".2f")
-                f2.add_hline(y=roi_target, line_dash="dash", line=dict(color="red"))
-                f2.update_layout(xaxis_tickangle=-45)
-                st.plotly_chart(f2,use_container_width=True)
-            show=[c for c in ["人群包名称","总花费","总成交金额","ROI","CPC","等级","策略","执行"] if c in df_crowd_sum.columns]
-            st.dataframe(df_crowd_sum[show].round(2),use_container_width=True,hide_index=True)
-            st.download_button("📥下载人群清单",data=df_crowd_sum.to_csv(index=False,encoding="utf-8-sig"),file_name="人群清单.csv")
-        else: st.info("报表无【人群包名称】列")
+metric_options = {
+    "花费": "花费",
+    "总成交金额": "总成交金额",
+    "总成交笔数": "总成交笔数",
+    "点击量": "点击量",
+    "展现量": "展现量",
+}
+rank_metric = st.selectbox("按哪个指标排序?", list(metric_options.keys()), index=0)
+rank_col = metric_options[rank_metric]
 
-    with tab7:
-        st.markdown("### 🎯明细清单")
-        dv=df_detail[df_detail["等级"].isin(filter_level_list)]
-        show=[c for c in ["日期","商品ID","商品名称","计划名称","关键词","人群包名称","花费","成交金额","ROI","CPC","加购数","预警标记","等级","策略","执行"] if c in dv.columns]
-        st.dataframe(dv[show].round(2),use_container_width=True,hide_index=True)
-        st.download_button("📥下载筛选明细",data=dv.to_csv(index=False,encoding="utf-8-sig"),file_name="筛选明细.csv")
+if rank_col in dff.columns and "主体名称" in dff.columns:
+    rank_df = (
+        dff.groupby(["主体ID", "主体名称"], as_index=False)[rank_col]
+        .sum()
+        .sort_values(rank_col, ascending=False)
+        .head(top_n)
+    )
+    rank_df["短名"] = rank_df["主体名称"].str.slice(0, 20)
+    fig = px.bar(rank_df, x=rank_col, y="短名", orientation="h",
+                 title=f"Top {top_n} · 按{rank_metric}")
+    fig.update_layout(yaxis=dict(autorange="reversed"))
+    st.plotly_chart(fig, use_container_width=True)
 
-        st.markdown("### 📈日度时间趋势")
-        st.info("需报表含【日期】列；多份日报一起上传画多日趋势。")
-        if "日期" in df.columns and pd.notna(df["日期"]).any():
-            df["日期"]=pd.to_datetime(df["日期"],errors="coerce")
-            day_agg={"花费":("花费","sum")}
-            if "成交金额" in df.columns: day_agg["成交金额"]=("成交金额","sum")
-            if "点击量" in df.columns: day_agg["点击量"]=("点击量","sum")
-            dd=df.groupby("日期").agg(**day_agg).reset_index()
-            if "花费" in dd.columns and "成交金额" in dd.columns:
-                dd["ROI"]=np.where(dd["花费"]>0,dd["成交金额"]/dd["花费"],0)
-            st.plotly_chart(px.line(dd,x="日期",y="花费",markers=True,title="每日花费"),use_container_width=True)
-            if "ROI" in dd.columns:
-                f2=px.line(dd,x="日期",y="ROI",markers=True,title="每日ROI")
-                f2.add_hline(y=roi_target, line_dash="dash", line=dict(color="red"))
-                st.plotly_chart(f2,use_container_width=True)
-        else: st.warning("报表缺少【日期】列")
+st.divider()
 
-        st.markdown("### 📝投放操作记录")
-        st.info("记录后台调整，刷新网页会丢失，请及时导出。")
-        with st.form("log_form"):
-            f1,f2,f3=st.columns(3)
-            with f1:
-                t1=st.text_input("推广类型"); t2=st.text_input("对象名称")
-            with f2:
-                act=st.selectbox("执行动作",["提升预算","降低预算","提高出价","降低出价","暂停单元","开启单元","修改创意","其他"])
-            with f3:
-                adj=st.text_input("调整内容"); note=st.text_input("备注")
-            if st.form_submit_button("✅保存记录"):
-                st.session_state.action_log=pd.concat([st.session_state.action_log,pd.DataFrame([{"操作时间":datetime.now().strftime("%Y-%m-%d %H:%M:%S"),"推广类型":t1,"对象名称":t2,"执行动作":act,"调整内容":adj,"备注":note}])],ignore_index=True)
-                st.success("已保存!")
-        st.dataframe(st.session_state.action_log,hide_index=True,use_container_width=True)
-        st.download_button("📥导出操作记录",data=st.session_state.action_log.to_csv(index=False,encoding="utf-8-sig"),file_name="操作记录.csv")
+# ---------- 7. 明细表 ----------
+st.subheader("📋 商品明细")
 
-else:
-    st.info("👈上传万相台报表：商品报表看【待调整商品】；货品报表看【商品优化】；计划报表看【计划优化】；关键词明细看【商品×关键词】。字段自动识别。")
+default_cols = [c for c in [
+    "日期", "主体ID", "主体名称",
+    "展现量", "点击量", "点击率", "花费", "平均点击花费",
+    "总成交金额", "总成交笔数", "点击转化率", "投入产出比",
+    "总购物车数", "加购率", "总收藏加购数", "拍下订单笔数", "拍下订单金额",
+    "引导访问量", "成交新客数", "会员成交金额",
+] if c in dff.columns]
+
+selected_cols = st.multiselect(
+    "选择要展示的列", options=list(dff.columns), default=default_cols
+)
+
+show_df = dff[selected_cols] if selected_cols else dff
+
+st.dataframe(
+    show_df,
+    use_container_width=True,
+    height=520,
+    column_config={
+        "花费": st.column_config.NumberColumn("花费", format="¥%.2f"),
+        "总成交金额": st.column_config.NumberColumn("总成交金额", format="¥%.2f"),
+        "平均点击花费": st.column_config.NumberColumn("平均点击花费", format="¥%.4f"),
+        "点击率": st.column_config.NumberColumn("点击率", format="%.2f%%"),
+        "点击转化率": st.column_config.NumberColumn("点击转化率", format="%.2f%%"),
+        "加购率": st.column_config.NumberColumn("加购率", format="%.2f%%"),
+        "投入产出比": st.column_config.NumberColumn("投入产出比", format="%.2f"),
+    },
+)
+
+# 下载
+csv = show_df.to_csv(index=False).encode("utf-8-sig")
+st.download_button("⬇️ 下载当前筛选结果 CSV", csv, "filtered_report.csv", "text/csv")
