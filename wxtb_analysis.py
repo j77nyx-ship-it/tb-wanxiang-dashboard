@@ -72,7 +72,7 @@ LEVEL_ORDER = [
 
 
 # ============================================================
-# 3. 字段别名【修复：补全关键词报表列名】
+# 3. 字段别名（含达摩盘字段）
 # ============================================================
 
 COL_ALIASES = {
@@ -99,6 +99,11 @@ COL_ALIASES = {
         "宝贝",
     ],
 
+    "货品成长阶段": [
+        "货品成长阶段",
+        "成长阶段",
+    ],
+
     "计划名称": [
         "计划名字",
         "计划名称",
@@ -113,7 +118,6 @@ COL_ALIASES = {
         "场景",
     ],
 
-    # =========修复点：增加万相台关键词报表真实列名=========
     "关键词": [
         "关键词",
         "词",
@@ -135,6 +139,7 @@ COL_ALIASES = {
         "消耗",
         "总花费",
         "推广花费",
+        "营销推广消耗",
     ],
 
     "成交金额": [
@@ -150,12 +155,16 @@ COL_ALIASES = {
         "成交笔数",
         "订单数",
         "成交订单数",
+        "支付笔数",
+        "支付订单数",
     ],
 
     "点击量": [
         "点击量",
         "点击数",
         "点击",
+        "营销推广IPV",
+        "IPV",
     ],
 
     "展现量": [
@@ -184,6 +193,7 @@ COL_ALIASES = {
         "投产比",
         "ROI",
         "投产",
+        "营销推广ROI",
     ],
 
     "CPC": [
@@ -196,6 +206,22 @@ COL_ALIASES = {
         "点击率",
         "CTR",
     ],
+
+    "笔单价": [
+        "笔单价",
+        "客单价",
+        "平均成交客单价",
+    ],
+
+    "支付转化率": [
+        "支付转化率",
+        "转化率",
+    ],
+
+    "收加率": [
+        "收加率",
+        "收藏加购率",
+    ],
 }
 
 
@@ -206,7 +232,6 @@ def resolve_col(df, key):
         if col in df.columns:
             return col
 
-    # 模糊匹配
     for actual in df.columns:
         actual_str = str(actual).strip().lower()
 
@@ -263,7 +288,7 @@ def clean_numeric(series):
 
 
 # ============================================================
-# 5. 数据读取【修复：过滤合计行 + 去重，解决金额重复叠加】
+# 5. 数据读取（过滤合计行 + 去重）
 # ============================================================
 
 @st.cache_data(show_spinner="正在读取报表...")
@@ -301,12 +326,15 @@ def load_raw(files_data):
 
             tmp["__来源文件"] = name
 
-            # 过滤合计、小计、总计汇总行（万相台导出Excel自带尾部汇总行）
+            # 过滤合计、小计、总计汇总行
             text_cols = tmp.select_dtypes(include=["object"]).columns
-            filter_mask = pd.Series([True]*len(tmp), index=tmp.index)
-            kw_filter = ["合计","小计","总计","汇总","全部"]
+            filter_mask = pd.Series([True] * len(tmp), index=tmp.index)
+            kw_filter = ["合计", "小计", "总计", "汇总", "全部"]
             for col in text_cols:
-                mask = ~tmp[col].astype(str).str.contains("|".join(kw_filter), na=False)
+                mask = ~tmp[col].astype(str).str.contains(
+                    "|".join(kw_filter),
+                    na=False
+                )
                 filter_mask = filter_mask & mask
             tmp = tmp.loc[filter_mask].copy()
 
@@ -326,7 +354,7 @@ def load_raw(files_data):
         ignore_index=True,
         sort=False
     )
-    # 业务字段去重，忽略来源文件名，防止重复上传同一个文件金额翻倍
+
     business_cols = [c for c in df_all.columns if c != "__来源文件"]
     df_all = df_all.drop_duplicates(subset=business_cols, keep="first")
 
@@ -334,7 +362,7 @@ def load_raw(files_data):
 
 
 # ============================================================
-# 6. 数据标准化
+# 6. 数据标准化（支持万相台 + 达摩盘）
 # ============================================================
 
 @st.cache_data(show_spinner="正在标准化数据...")
@@ -360,6 +388,7 @@ def build_normalized(df_raw):
     text_fields = [
         "商品ID",
         "商品名称",
+        "货品成长阶段",
         "计划名称",
         "场景名称",
         "关键词",
@@ -371,16 +400,13 @@ def build_normalized(df_raw):
         c = resolve_col(df_raw, key)
 
         if c:
-
             out[key] = (
                 df_raw[c]
                 .astype(str)
                 .replace("nan", "")
                 .str.strip()
             )
-
         else:
-
             out[key] = ""
 
     # 数值字段
@@ -392,6 +418,7 @@ def build_normalized(df_raw):
         "展现量",
         "加购数",
         "收藏数",
+        "笔单价",
     ]
 
     for key in numeric_fields:
@@ -399,39 +426,55 @@ def build_normalized(df_raw):
         c = resolve_col(df_raw, key)
 
         if c:
-
-            out[key] = clean_numeric(
-                df_raw[c]
-            )
-
+            out[key] = clean_numeric(df_raw[c])
         else:
-
             out[key] = 0.0
+
+    # 达摩盘：没有成交笔数 → 用 支付金额 / 笔单价 推算
+    c_orders = resolve_col(df_raw, "成交笔数")
+    c_unit_price = resolve_col(df_raw, "笔单价")
+
+    if not c_orders and c_unit_price:
+        unit_price = clean_numeric(df_raw[c_unit_price])
+
+        orders_arr = np.where(
+            unit_price > 0,
+            out["成交金额"].values / unit_price.values,
+            0
+        )
+
+        out["成交笔数"] = np.round(orders_arr, 0)
+
+    # 达摩盘：没有加购数 → 用 收加率 * 点击量 近似推算
+    c_cart = resolve_col(df_raw, "加购数")
+    c_collect_cart_rate = resolve_col(df_raw, "收加率")
+
+    if not c_cart and c_collect_cart_rate:
+        raw_rate = df_raw[c_collect_cart_rate].astype(str)
+        rate = clean_numeric(df_raw[c_collect_cart_rate])
+
+        if raw_rate.str.contains("%", na=False).any() or rate.max() > 1:
+            rate = rate / 100
+
+        out["加购数"] = out["点击量"] * rate
 
     # ROI
     c = resolve_col(df_raw, "ROI")
 
     if c:
+        raw_roi = df_raw[c].astype(str)
+        roi = clean_numeric(df_raw[c])
 
-        roi = clean_numeric(
-            df_raw[c]
-        )
-
-        # 如果原始 ROI 是百分比形式，例如 300%
-        if roi.max() > 100:
+        # 仅当明确带 % 才除以100，达摩盘ROI可能天然大于100
+        if raw_roi.str.contains("%", na=False).any():
             roi = roi / 100
 
         out["ROI"] = (
             roi
-            .replace(
-                [np.inf, -np.inf],
-                0
-            )
+            .replace([np.inf, -np.inf], 0)
             .fillna(0)
         )
-
     else:
-
         out["ROI"] = safe_div(
             out["成交金额"],
             out["花费"]
@@ -441,13 +484,8 @@ def build_normalized(df_raw):
     c = resolve_col(df_raw, "CPC")
 
     if c:
-
-        out["CPC"] = clean_numeric(
-            df_raw[c]
-        )
-
+        out["CPC"] = clean_numeric(df_raw[c])
     else:
-
         out["CPC"] = safe_div(
             out["花费"],
             out["点击量"]
@@ -457,29 +495,35 @@ def build_normalized(df_raw):
     c = resolve_col(df_raw, "CTR")
 
     if c:
+        raw_ctr = df_raw[c].astype(str)
+        ctr = clean_numeric(df_raw[c])
 
-        ctr = clean_numeric(
-            df_raw[c]
-        )
-
-        # 如果是 2.5 代表 2.5%
-        if ctr.max() > 1:
+        if raw_ctr.str.contains("%", na=False).any() or ctr.max() > 1:
             ctr = ctr / 100
 
         out["CTR"] = ctr
-
     else:
-
         out["CTR"] = safe_div(
             out["点击量"],
             out["展现量"]
         )
 
-    # CVR
-    out["CVR"] = safe_div(
-        out["成交笔数"],
-        out["点击量"]
-    )
+    # CVR：优先使用达摩盘支付转化率
+    c = resolve_col(df_raw, "支付转化率")
+
+    if c:
+        raw_cvr = df_raw[c].astype(str)
+        cvr = clean_numeric(df_raw[c])
+
+        if raw_cvr.str.contains("%", na=False).any() or cvr.max() > 1:
+            cvr = cvr / 100
+
+        out["CVR"] = cvr
+    else:
+        out["CVR"] = safe_div(
+            out["成交笔数"],
+            out["点击量"]
+        )
 
     # 加购率
     out["加购率"] = safe_div(
@@ -589,7 +633,7 @@ with st.sidebar:
     st.header("📁 数据上传")
 
     upload_files = st.file_uploader(
-        "上传万相台 Excel / CSV，可多选",
+        "上传万相台 / 达摩盘 Excel / CSV，可多选",
         type=[
             "xlsx",
             "xls",
@@ -606,7 +650,7 @@ with st.sidebar:
 if not upload_files:
 
     st.info(
-        "👈 上传万相台报表后，系统会自动生成："
+        "👈 上传万相台 / 达摩盘报表后，系统会自动生成："
         "今日军师、问题诊断、执行清单、商品/计划/关键词/人群分析。"
     )
 
@@ -625,6 +669,13 @@ if not upload_files:
         **④ 今天具体应该怎么调？**
 
         **⑤ 昨天调整以后有没有变好？**
+
+        ---
+
+        **支持的报表类型：**
+
+        - 万相台：关键词报表 / 计划报表 / 商品报表 / 人群报表
+        - 达摩盘：《全店单品列表》等单品维度报表
         """
     )
 
@@ -662,6 +713,21 @@ if df.empty:
     )
 
     st.stop()
+
+
+# 数据源识别提示
+_is_dmp = (
+    ("营销推广消耗" in df_raw.columns)
+    or ("宝贝ID" in df_raw.columns and "营销推广IPV" in df_raw.columns)
+)
+
+if _is_dmp:
+    st.info(
+        "已识别为达摩盘《全店单品列表》风格数据："
+        "营销推广消耗=花费，支付金额=成交金额，"
+        "营销推广IPV=点击量，营销推广ROI=ROI。"
+        "达摩盘无日期 / 计划 / 关键词 / 人群时，对应页面会为空，属正常现象。"
+    )
 
 
 # ============================================================
@@ -703,16 +769,8 @@ dff = df.copy()
 
 if date_range and len(date_range) == 2:
 
-    start = pd.to_datetime(
-        date_range[0]
-    )
-
-    end = (
-        pd.to_datetime(
-            date_range[1]
-        )
-        + pd.Timedelta(days=1)
-    )
+    start = pd.to_datetime(date_range[0])
+    end = pd.to_datetime(date_range[1]) + pd.Timedelta(days=1)
 
     dff = dff[
         (dff["日期"].isna())
@@ -772,23 +830,12 @@ def calculate_confidence(
         score += 40
 
     if score >= 80:
-
-        return (
-            "🟢高可信",
-            score
-        )
+        return ("🟢高可信", score)
 
     if score >= 50:
+        return ("⚠️中可信", score)
 
-        return (
-            "⚠️中可信",
-            score
-        )
-
-    return (
-        "⚪样本不足",
-        score
-    )
+    return ("⚪样本不足", score)
 
 
 def diagnose_row(
@@ -826,14 +873,10 @@ def diagnose_row(
         min_orders,
     )
 
-    # --------------------------------------------------------
     # 先判断样本
-    # --------------------------------------------------------
-
     if confidence == "⚪样本不足":
 
         level = "🟡样本不足"
-
         action = "暂不操作"
 
         reason = (
@@ -860,50 +903,30 @@ def diagnose_row(
             }
         )
 
-    # --------------------------------------------------------
     # 漏斗诊断
-    # --------------------------------------------------------
-
     problems = []
 
-    if ctr > 0 and ctr < low_ctr_warn:
-
-        problems.append(
-            "CTR偏低：优先检查素材/人群匹配"
-        )
+    # 只有存在展现量时才判断CTR（达摩盘无展现量时跳过）
+    if impressions > 0 and ctr > 0 and ctr < low_ctr_warn:
+        problems.append("CTR偏低：优先检查素材/人群匹配")
 
     if cpc > high_cpc_warn:
-
-        problems.append(
-            "CPC偏高：流量获取成本偏高"
-        )
+        problems.append("CPC偏高：流量获取成本偏高")
 
     if clicks >= min_clicks and cvr == 0:
-
-        problems.append(
-            "点击后无成交：重点检查商品转化"
-        )
+        problems.append("点击后无成交：重点检查商品转化")
 
     if add_rate < 0.03 and clicks >= min_clicks:
+        problems.append("加购率偏低：商品承接可能偏弱")
 
-        problems.append(
-            "加购率偏低：商品承接可能偏弱"
-        )
-
-    # --------------------------------------------------------
     # 核心决策
-    # --------------------------------------------------------
-
     if (
         roi >= roi_target * 1.20
         and orders >= min_orders
     ):
 
         level = "🟢可以放量"
-
-        action = (
-            f"预算 +{scale_up_pct}%"
-        )
+        action = f"预算 +{scale_up_pct}%"
 
         reason = (
             f"ROI {roi:.2f} 高于目标 "
@@ -913,11 +936,7 @@ def diagnose_row(
         )
 
         if problems:
-
-            reason += (
-                "；"
-                + "；".join(problems)
-            )
+            reason += ("；" + "；".join(problems))
 
         priority = 2
 
@@ -929,17 +948,12 @@ def diagnose_row(
         level = "🔴立即处理"
 
         if clicks >= min_clicks and orders == 0:
-
             action = (
                 f"高风险：降低出价 {reduce_bid_pct}%"
                 "；必要时暂停低效单元"
             )
-
         else:
-
-            action = (
-                f"降低出价 {reduce_bid_pct}%"
-            )
+            action = f"降低出价 {reduce_bid_pct}%"
 
         reason = (
             f"花费 {format_money(spend)}，"
@@ -948,11 +962,7 @@ def diagnose_row(
         )
 
         if problems:
-
-            reason += (
-                "主要问题："
-                + "；".join(problems)
-            )
+            reason += ("主要问题：" + "；".join(problems))
 
         priority = 1
 
@@ -962,10 +972,7 @@ def diagnose_row(
     ):
 
         level = "🔴立即处理"
-
-        action = (
-            "降低出价 / 暂停低效单元"
-        )
+        action = "降低出价 / 暂停低效单元"
 
         reason = (
             f"累计花费 {format_money(spend)}，"
@@ -978,10 +985,7 @@ def diagnose_row(
     elif roi < roi_target:
 
         level = "⚠️重点观察"
-
-        action = (
-            f"降低出价 {max(5, reduce_bid_pct // 2)}%"
-        )
+        action = f"降低出价 {max(5, reduce_bid_pct // 2)}%"
 
         reason = (
             f"ROI {roi:.2f} 低于目标 "
@@ -990,18 +994,13 @@ def diagnose_row(
         )
 
         if problems:
-
-            reason += (
-                "；"
-                + "；".join(problems)
-            )
+            reason += ("；" + "；".join(problems))
 
         priority = 3
 
     else:
 
         level = "⚪暂不操作"
-
         action = "保持当前策略"
 
         reason = (
@@ -1188,6 +1187,8 @@ overall_cvr = (
     else 0
 )
 
+has_impression = total_impressions > 0
+
 
 # ============================================================
 # 15. 顶部 KPI
@@ -1223,7 +1224,7 @@ k4.metric(
 
 k5.metric(
     "CTR",
-    format_pct(overall_ctr)
+    format_pct(overall_ctr) if has_impression else "-"
 )
 
 k6.metric(
@@ -1249,51 +1250,29 @@ if df_product.empty:
 else:
 
     urgent = df_product[
-        df_product["等级"]
-        == "🔴立即处理"
+        df_product["等级"] == "🔴立即处理"
     ].copy()
 
     scale = df_product[
-        df_product["等级"]
-        == "🟢可以放量"
+        df_product["等级"] == "🟢可以放量"
     ].copy()
 
     observe = df_product[
-        df_product["等级"]
-        == "⚠️重点观察"
+        df_product["等级"] == "⚠️重点观察"
     ].copy()
 
     sample = df_product[
-        df_product["等级"]
-        == "🟡样本不足"
+        df_product["等级"] == "🟡样本不足"
     ].copy()
 
     c1, c2, c3, c4 = st.columns(4)
 
-    c1.metric(
-        "🔴必须处理",
-        len(urgent)
-    )
+    c1.metric("🔴必须处理", len(urgent))
+    c2.metric("🟢可以放量", len(scale))
+    c3.metric("⚠️重点观察", len(observe))
+    c4.metric("🟡样本不足", len(sample))
 
-    c2.metric(
-        "🟢可以放量",
-        len(scale)
-    )
-
-    c3.metric(
-        "⚠️重点观察",
-        len(observe)
-    )
-
-    c4.metric(
-        "🟡样本不足",
-        len(sample)
-    )
-
-    # --------------------------------------------------------
     # 今日一句话判断
-    # --------------------------------------------------------
-
     if (
         overall_roi >= roi_target
         and len(urgent) == 0
@@ -1347,8 +1326,7 @@ if not df_product.empty:
     ]
 
     execute_cols = [
-        c
-        for c in execute_cols
+        c for c in execute_cols
         if c in df_product.columns
     ]
 
@@ -1364,9 +1342,7 @@ if not df_product.empty:
 
     if execute_df.empty:
 
-        st.info(
-            "目前没有明确需要执行的调整。"
-        )
+        st.info("目前没有明确需要执行的调整。")
 
     else:
 
@@ -1375,35 +1351,12 @@ if not df_product.empty:
             hide_index=True,
             use_container_width=True,
             column_config={
-                "总花费":
-                    st.column_config.NumberColumn(
-                        format="¥%.2f"
-                    ),
-
-                "总成交金额":
-                    st.column_config.NumberColumn(
-                        format="¥%.2f"
-                    ),
-
-                "整体ROI":
-                    st.column_config.NumberColumn(
-                        format="%.2f"
-                    ),
-
-                "CTR":
-                    st.column_config.NumberColumn(
-                        format="%.2%"
-                    ),
-
-                "CPC":
-                    st.column_config.NumberColumn(
-                        format="¥%.3f"
-                    ),
-
-                "CVR":
-                    st.column_config.NumberColumn(
-                        format="%.2%"
-                    ),
+                "总花费": st.column_config.NumberColumn(format="¥%.2f"),
+                "总成交金额": st.column_config.NumberColumn(format="¥%.2f"),
+                "整体ROI": st.column_config.NumberColumn(format="%.2f"),
+                "CTR": st.column_config.NumberColumn(format="%.2%%"),
+                "CPC": st.column_config.NumberColumn(format="¥%.3f"),
+                "CVR": st.column_config.NumberColumn(format="%.2%%"),
             }
         )
 
@@ -1433,6 +1386,10 @@ funnel_df = pd.DataFrame(
     }
 )
 
+# 如果完全没有曝光数据（达摩盘），隐藏曝光阶段
+if not has_impression:
+    funnel_df = funnel_df[funnel_df["阶段"] != "曝光"]
+
 fig_funnel = go.Figure(
     go.Funnel(
         y=funnel_df["阶段"],
@@ -1443,24 +1400,16 @@ fig_funnel = go.Figure(
 
 fig_funnel.update_layout(
     height=430,
-    margin=dict(
-        l=20,
-        r=20,
-        t=30,
-        b=20,
-    ),
+    margin=dict(l=20, r=20, t=30, b=20),
 )
 
-st.plotly_chart(
-    fig_funnel,
-    use_container_width=True
-)
+st.plotly_chart(fig_funnel, use_container_width=True)
 
 fc1, fc2, fc3, fc4 = st.columns(4)
 
 fc1.metric(
     "CTR",
-    format_pct(overall_ctr)
+    format_pct(overall_ctr) if has_impression else "-"
 )
 
 fc2.metric(
@@ -1484,37 +1433,29 @@ fc4.metric(
 
 funnel_problems = []
 
-if overall_ctr < low_ctr_warn:
-
+if has_impression and overall_ctr < low_ctr_warn:
     funnel_problems.append(
         "CTR偏低：优先检查素材、商品首图、人群匹配。"
     )
 
 if overall_cpc > high_cpc_warn:
-
     funnel_problems.append(
         "CPC偏高：检查竞争环境、出价以及低效流量。"
     )
 
 if overall_cvr < 0.01 and total_clicks >= min_clicks:
-
     funnel_problems.append(
         "点击后成交率偏低：重点检查商品承接、价格、详情页和评价。"
     )
 
 if not funnel_problems:
 
-    st.success(
-        "🟢 当前没有发现明显的漏斗级异常。"
-    )
+    st.success("🟢 当前没有发现明显的漏斗级异常。")
 
 else:
 
     for p in funnel_problems:
-
-        st.warning(
-            "• " + p
-        )
+        st.warning("• " + p)
 
 
 # ============================================================
@@ -1550,16 +1491,11 @@ if not df_product.empty:
         )
 
         fig.update_layout(
-            yaxis=dict(
-                autorange="reversed"
-            ),
+            yaxis=dict(autorange="reversed"),
             height=550,
         )
 
-        st.plotly_chart(
-            fig,
-            use_container_width=True
-        )
+        st.plotly_chart(fig, use_container_width=True)
 
 
 # ============================================================
@@ -1588,74 +1524,43 @@ if (
         .reset_index()
     )
 
-    daily["ROI"] = safe_div(
-        daily["成交金额"],
-        daily["花费"]
-    )
+    daily["ROI"] = safe_div(daily["成交金额"], daily["花费"])
+    daily["CPC"] = safe_div(daily["花费"], daily["点击量"])
 
-    daily["CPC"] = safe_div(
-        daily["花费"],
-        daily["点击量"]
-    )
-
-    daily = daily.sort_values(
-        "日期"
-    )
+    daily = daily.sort_values("日期")
 
     if len(daily) >= 2:
 
         latest = daily.iloc[-1]
         previous = daily.iloc[-2]
 
-        roi_change = pct_change(
-            latest["ROI"],
-            previous["ROI"]
-        )
-
-        spend_change = pct_change(
-            latest["花费"],
-            previous["花费"]
-        )
-
-        order_change = pct_change(
-            latest["成交笔数"],
-            previous["成交笔数"]
-        )
+        roi_change = pct_change(latest["ROI"], previous["ROI"])
+        spend_change = pct_change(latest["花费"], previous["花费"])
+        order_change = pct_change(latest["成交笔数"], previous["成交笔数"])
 
         cc1, cc2, cc3 = st.columns(3)
 
-        cc1.metric(
-            "ROI变化",
-            format_pct(roi_change),
-        )
-
-        cc2.metric(
-            "花费变化",
-            format_pct(spend_change),
-        )
-
-        cc3.metric(
-            "成交变化",
-            format_pct(order_change),
-        )
+        cc1.metric("ROI变化", format_pct(roi_change))
+        cc2.metric("花费变化", format_pct(spend_change))
+        cc3.metric("成交变化", format_pct(order_change))
 
         if roi_change <= -0.20:
 
             st.error(
-                "🔴 最近一天 ROI 较上一天明显下降，建议优先检查低效商品和计划。"
+                "🔴 最近一天 ROI 较上一天明显下降，"
+                "建议优先检查低效商品和计划。"
             )
 
         elif roi_change >= 0.20:
 
             st.success(
-                "🟢 最近一天 ROI 明显改善，可以重点检查哪些商品贡献了增长。"
+                "🟢 最近一天 ROI 明显改善，"
+                "可以重点检查哪些商品贡献了增长。"
             )
 
         else:
 
-            st.info(
-                "⚠️ 最近一天 ROI 没有出现剧烈变化。"
-            )
+            st.info("⚠️ 最近一天 ROI 没有出现剧烈变化。")
 
         trend_col1, trend_col2 = st.columns(2)
 
@@ -1664,18 +1569,12 @@ if (
             fig = px.line(
                 daily,
                 x="日期",
-                y=[
-                    "花费",
-                    "成交金额",
-                ],
+                y=["花费", "成交金额"],
                 markers=True,
                 title="花费 / GMV趋势",
             )
 
-            st.plotly_chart(
-                fig,
-                use_container_width=True
-            )
+            st.plotly_chart(fig, use_container_width=True)
 
         with trend_col2:
 
@@ -1687,15 +1586,16 @@ if (
                 title="ROI趋势",
             )
 
-            fig.add_hline(
-                y=roi_target,
-                line_dash="dash",
-            )
+            fig.add_hline(y=roi_target, line_dash="dash")
 
-            st.plotly_chart(
-                fig,
-                use_container_width=True
-            )
+            st.plotly_chart(fig, use_container_width=True)
+
+else:
+
+    st.info(
+        "当前数据没有日期字段或多天数据，趋势分析已跳过。"
+        "（达摩盘《全店单品列表》通常为聚合数据，不含日期，属正常现象。）"
+    )
 
 
 # ============================================================
@@ -1716,113 +1616,77 @@ tabs = st.tabs(
 )
 
 
-# ============================================================
 # Tab 1 立即处理
-# ============================================================
-
 with tabs[0]:
 
-    st.subheader(
-        "🚨 今天优先处理"
-    )
+    st.subheader("🚨 今天优先处理")
 
     if df_product.empty:
 
-        st.info(
-            "暂无商品数据。"
-        )
+        st.info("暂无商品数据。")
 
     else:
 
         urgent_df = df_product[
-            df_product["等级"]
-            == "🔴立即处理"
+            df_product["等级"] == "🔴立即处理"
         ].copy()
 
         if urgent_df.empty:
 
-            st.success(
-                "🟢 当前没有进入立即处理名单的商品。"
-            )
+            st.success("🟢 当前没有进入立即处理名单的商品。")
 
         else:
 
+            show_cols = [
+                "商品名称",
+                "总花费",
+                "总成交金额",
+                "总成交笔数",
+                "整体ROI",
+                "CTR",
+                "CPC",
+                "CVR",
+                "置信度",
+                "诊断",
+                "建议动作",
+                "建议幅度",
+            ]
+
+            show_cols = [c for c in show_cols if c in urgent_df.columns]
+
             st.dataframe(
-                urgent_df[
-                    [
-                        "商品名称",
-                        "总花费",
-                        "总成交金额",
-                        "总成交笔数",
-                        "整体ROI",
-                        "CTR",
-                        "CPC",
-                        "CVR",
-                        "置信度",
-                        "诊断",
-                        "建议动作",
-                        "建议幅度",
-                    ]
-                ],
+                urgent_df[show_cols],
                 hide_index=True,
                 use_container_width=True,
                 column_config={
-                    "总花费":
-                        st.column_config.NumberColumn(
-                            format="¥%.2f"
-                        ),
-                    "总成交金额":
-                        st.column_config.NumberColumn(
-                            format="¥%.2f"
-                        ),
-                    "整体ROI":
-                        st.column_config.NumberColumn(
-                            format="%.2f"
-                        ),
-                    "CTR":
-                        st.column_config.NumberColumn(
-                            format="%.2%"
-                        ),
-                    "CPC":
-                        st.column_config.NumberColumn(
-                            format="¥%.3f"
-                        ),
-                    "CVR":
-                        st.column_config.NumberColumn(
-                            format="%.2%"
-                        ),
+                    "总花费": st.column_config.NumberColumn(format="¥%.2f"),
+                    "总成交金额": st.column_config.NumberColumn(format="¥%.2f"),
+                    "整体ROI": st.column_config.NumberColumn(format="%.2f"),
+                    "CTR": st.column_config.NumberColumn(format="%.2%%"),
+                    "CPC": st.column_config.NumberColumn(format="¥%.3f"),
+                    "CVR": st.column_config.NumberColumn(format="%.2%%"),
                 }
             )
 
 
-# ============================================================
 # Tab 2 放量
-# ============================================================
-
 with tabs[1]:
 
-    st.subheader(
-        "🟢 可以放量"
-    )
+    st.subheader("🟢 可以放量")
 
     if df_product.empty:
 
-        st.info(
-            "暂无商品数据。"
-        )
+        st.info("暂无商品数据。")
 
     else:
 
         scale_df = df_product[
-            df_product["等级"]
-            == "🟢可以放量"
+            df_product["等级"] == "🟢可以放量"
         ].copy()
 
         if scale_df.empty:
 
-            st.info(
-                "目前没有达到放量条件的商品。"
-            )
+            st.info("目前没有达到放量条件的商品。")
 
         else:
 
@@ -1830,43 +1694,38 @@ with tabs[1]:
                 f"共发现 {len(scale_df)} 个具备一定放量基础的商品。"
             )
 
+            show_cols = [
+                "商品名称",
+                "总花费",
+                "总成交金额",
+                "总成交笔数",
+                "整体ROI",
+                "CTR",
+                "CPC",
+                "CVR",
+                "置信度",
+                "诊断",
+                "建议动作",
+                "建议幅度",
+            ]
+
+            show_cols = [c for c in show_cols if c in scale_df.columns]
+
             st.dataframe(
-                scale_df[
-                    [
-                        "商品名称",
-                        "总花费",
-                        "总成交金额",
-                        "总成交笔数",
-                        "整体ROI",
-                        "CTR",
-                        "CPC",
-                        "CVR",
-                        "置信度",
-                        "诊断",
-                        "建议动作",
-                        "建议幅度",
-                    ]
-                ],
+                scale_df[show_cols],
                 hide_index=True,
                 use_container_width=True,
             )
 
 
-# ============================================================
 # Tab 3 商品
-# ============================================================
-
 with tabs[2]:
 
-    st.subheader(
-        "📦 商品经营诊断"
-    )
+    st.subheader("📦 商品经营诊断")
 
     if df_product.empty:
 
-        st.warning(
-            "没有识别到商品字段。"
-        )
+        st.warning("没有识别到商品字段。")
 
     else:
 
@@ -1878,9 +1737,7 @@ with tabs[2]:
         )
 
         view = df_product[
-            df_product["等级"].isin(
-                level_filter
-            )
+            df_product["等级"].isin(level_filter)
         ]
 
         st.dataframe(
@@ -1891,28 +1748,22 @@ with tabs[2]:
 
         st.download_button(
             "📥 下载商品诊断",
-            data=view.to_csv(
-                index=False
-            ).encode("utf-8-sig"),
+            data=view.to_csv(index=False).encode("utf-8-sig"),
             file_name="商品诊断.csv",
             mime="text/csv",
         )
 
 
-# ============================================================
 # Tab 4 计划
-# ============================================================
-
 with tabs[3]:
 
-    st.subheader(
-        "📋 计划诊断"
-    )
+    st.subheader("📋 计划诊断")
 
     if df_plan.empty:
 
         st.warning(
             "没有识别到计划字段。"
+            "达摩盘《全店单品列表》不含计划维度，属正常现象。"
         )
 
     else:
@@ -1925,28 +1776,27 @@ with tabs[3]:
 
         st.download_button(
             "📥 下载计划诊断",
-            data=df_plan.to_csv(
-                index=False
-            ).encode("utf-8-sig"),
+            data=df_plan.to_csv(index=False).encode("utf-8-sig"),
             file_name="计划诊断.csv",
             mime="text/csv",
         )
 
 
-# ============================================================
 # Tab 5 关键词
-# ============================================================
-
 with tabs[4]:
 
-    st.subheader(
-        "🔑 关键词诊断"
+    st.subheader("🔑 关键词诊断")
+
+    st.info(
+        "⚠️ 关键词报表本身不含商品字段，仅做关键词维度分析。"
+        "达摩盘《全店单品列表》不含关键词维度，属正常现象。"
     )
-    st.info("⚠️注意：万相台【关键词报表】本身不含商品字段，仅做关键词维度分析。")
+
     if df_keyword.empty:
 
         st.warning(
-            "没有识别到关键词字段，请确认报表列名：词名字/词包名字。"
+            "没有识别到关键词字段，请确认报表列名："
+            "词名字 / 词包名字 / 关键词。"
         )
 
     else:
@@ -1959,28 +1809,22 @@ with tabs[4]:
 
         st.download_button(
             "📥 下载关键词诊断",
-            data=df_keyword.to_csv(
-                index=False
-            ).encode("utf-8-sig"),
+            data=df_keyword.to_csv(index=False).encode("utf-8-sig"),
             file_name="关键词诊断.csv",
             mime="text/csv",
         )
 
 
-# ============================================================
 # Tab 6 人群
-# ============================================================
-
 with tabs[5]:
 
-    st.subheader(
-        "👥 人群诊断"
-    )
+    st.subheader("👥 人群诊断")
 
     if df_crowd.empty:
 
         st.warning(
             "没有识别到人群字段。"
+            "达摩盘《全店单品列表》不含人群维度，属正常现象。"
         )
 
     else:
@@ -1993,31 +1837,22 @@ with tabs[5]:
 
         st.download_button(
             "📥 下载人群诊断",
-            data=df_crowd.to_csv(
-                index=False
-            ).encode("utf-8-sig"),
+            data=df_crowd.to_csv(index=False).encode("utf-8-sig"),
             file_name="人群诊断.csv",
             mime="text/csv",
         )
 
 
-# ============================================================
 # Tab 7 操作复盘
-# ============================================================
-
 with tabs[6]:
 
-    st.subheader(
-        "📝 操作记录与复盘"
-    )
+    st.subheader("📝 操作记录与复盘")
 
     st.caption(
         "这里记录你实际执行了什么，下一次上传数据后可以对照观察效果。"
     )
 
-    with st.form(
-        "action_log_form"
-    ):
+    with st.form("action_log_form"):
 
         c1, c2 = st.columns(2)
 
@@ -2035,9 +1870,7 @@ with tabs[6]:
                 ]
             )
 
-            object_name = st.text_input(
-                "对象名称"
-            )
+            object_name = st.text_input("对象名称")
 
             action = st.selectbox(
                 "执行动作",
@@ -2056,13 +1889,8 @@ with tabs[6]:
 
         with c2:
 
-            suggested_value = st.text_input(
-                "系统建议值"
-            )
-
-            actual_value = st.text_input(
-                "实际执行值"
-            )
+            suggested_value = st.text_input("系统建议值")
+            actual_value = st.text_input("实际执行值")
 
             result = st.selectbox(
                 "操作结果",
@@ -2074,57 +1902,32 @@ with tabs[6]:
                 ]
             )
 
-            note = st.text_input(
-                "备注"
-            )
+            note = st.text_input("备注")
 
-        submit = st.form_submit_button(
-            "保存操作"
-        )
+        submit = st.form_submit_button("保存操作")
 
         if submit:
 
             new_row = {
-                "操作时间":
-                    datetime.now().strftime(
-                        "%Y-%m-%d %H:%M:%S"
-                    ),
-
-                "推广类型":
-                    action_type,
-
-                "对象名称":
-                    object_name,
-
-                "执行动作":
-                    action,
-
-                "建议值":
-                    suggested_value,
-
-                "实际值":
-                    actual_value,
-
-                "操作结果":
-                    result,
-
-                "备注":
-                    note,
+                "操作时间": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "推广类型": action_type,
+                "对象名称": object_name,
+                "执行动作": action,
+                "建议值": suggested_value,
+                "实际值": actual_value,
+                "操作结果": result,
+                "备注": note,
             }
 
             st.session_state.action_log = pd.concat(
                 [
                     st.session_state.action_log,
-                    pd.DataFrame(
-                        [new_row]
-                    ),
+                    pd.DataFrame([new_row]),
                 ],
                 ignore_index=True,
             )
 
-            st.success(
-                "操作已记录。"
-            )
+            st.success("操作已记录。")
 
     if not st.session_state.action_log.empty:
 
@@ -2150,38 +1953,23 @@ with tabs[6]:
 
 with tabs[7]:
 
-    st.subheader(
-        "🤖 AI 投放军师"
-    )
+    st.subheader("🤖 AI 投放军师")
 
     st.info(
         "规则引擎负责计算事实和判断风险；AI 负责把这些结果整理成运营语言。"
     )
 
-    # --------------------------------------------------------
-    # 获取 API Key
-    # --------------------------------------------------------
-
     secret_key = ""
 
     try:
-
         if "DOUBAO_API_KEY" in st.secrets:
-
-            secret_key = st.secrets[
-                "DOUBAO_API_KEY"
-            ]
-
+            secret_key = st.secrets["DOUBAO_API_KEY"]
     except Exception:
-
         secret_key = ""
 
     if secret_key:
 
-        st.success(
-            "🔐 已读取服务器 Secrets 中的 API Key。"
-        )
-
+        st.success("🔐 已读取服务器 Secrets 中的 API Key。")
         api_key = secret_key
 
     else:
@@ -2199,26 +1987,30 @@ with tabs[7]:
 
     if df_product.empty:
 
-        st.warning(
-            "没有商品级数据，AI 军师暂时无法工作。"
-        )
+        st.warning("没有商品级数据，AI 军师暂时无法工作。")
 
     else:
 
         urgent_ai = df_product[
-            df_product["等级"]
-            == "🔴立即处理"
+            df_product["等级"] == "🔴立即处理"
         ].head(10)
 
         scale_ai = df_product[
-            df_product["等级"]
-            == "🟢可以放量"
+            df_product["等级"] == "🟢可以放量"
         ].head(10)
 
         observe_ai = df_product[
-            df_product["等级"]
-            == "⚠️重点观察"
+            df_product["等级"] == "⚠️重点观察"
         ].head(10)
+
+        ai_cols = [
+            "商品名称",
+            "总花费",
+            "整体ROI",
+            "总成交笔数",
+            "诊断",
+            "建议动作",
+        ]
 
         ai_payload = {
             "店铺目标": {
@@ -2228,74 +2020,19 @@ with tabs[7]:
             },
 
             "大盘": {
-                "总花费": round(
-                    total_spend,
-                    2
+                "总花费": round(total_spend, 2),
+                "GMV": round(total_gmv, 2),
+                "ROI": round(overall_roi, 3),
+                "CTR": (
+                    round(overall_ctr, 4) if has_impression else None
                 ),
-
-                "GMV": round(
-                    total_gmv,
-                    2
-                ),
-
-                "ROI": round(
-                    overall_roi,
-                    3
-                ),
-
-                "CTR": round(
-                    overall_ctr,
-                    4
-                ),
-
-                "CPC": round(
-                    overall_cpc,
-                    3
-                ),
-
-                "成交": int(
-                    total_orders
-                ),
+                "CPC": round(overall_cpc, 3),
+                "成交": int(total_orders),
             },
 
-            "立即处理": urgent_ai[
-                [
-                    "商品名称",
-                    "总花费",
-                    "整体ROI",
-                    "总成交笔数",
-                    "诊断",
-                    "建议动作",
-                ]
-            ].to_dict(
-                orient="records"
-            ),
-
-            "放量机会": scale_ai[
-                [
-                    "商品名称",
-                    "总花费",
-                    "整体ROI",
-                    "总成交笔数",
-                    "诊断",
-                    "建议动作",
-                ]
-            ].to_dict(
-                orient="records"
-            ),
-
-            "重点观察": observe_ai[
-                [
-                    "商品名称",
-                    "总花费",
-                    "整体ROI",
-                    "总成交笔数",
-                    "诊断",
-                    "建议动作",
-                ]
-            ].to_dict(
-                orient="records"
-            ),
+            "立即处理": urgent_ai[ai_cols].to_dict(orient="records"),
+            "放量机会": scale_ai[ai_cols].to_dict(orient="records"),
+            "重点观察": observe_ai[ai_cols].to_dict(orient="records"),
         }
 
         if st.button(
@@ -2305,14 +2042,12 @@ with tabs[7]:
 
             if not api_key:
 
-                st.warning(
-                    "请先配置 API Key。"
-                )
+                st.warning("请先配置 API Key。")
 
             else:
 
                 prompt = f"""
-你现在是一名淘宝万相台资深运营军师。
+你现在是一名淘宝万相台 / 达摩盘资深运营军师。
 
 你的任务不是重新计算数据，而是基于下面已经经过程序计算的数据，
 帮助运营人员做出今天可以执行的决策。
@@ -2331,53 +2066,34 @@ with tabs[7]:
 6. 如果数据不足，宁可建议观察，不要强行给结论。
 7. 不要把所有问题都归因于出价。
 8. 要根据 CTR、CPC、CVR、加购率和 ROI 判断问题发生在哪一层。
-9. 最后给出一份“今天照着做”的执行清单。
+9. 如果数据源为达摩盘（无展现量），则不要讨论 CTR。
+10. 最后给出一份“今天照着做”的执行清单。
 
 【店铺参数】
 
-{json.dumps(
-    ai_payload["店铺目标"],
-    ensure_ascii=False,
-    indent=2
-)}
+{json.dumps(ai_payload["店铺目标"], ensure_ascii=False, indent=2)}
 
 【大盘】
 
-{json.dumps(
-    ai_payload["大盘"],
-    ensure_ascii=False,
-    indent=2
-)}
+{json.dumps(ai_payload["大盘"], ensure_ascii=False, indent=2)}
 
 【立即处理】
 
-{json.dumps(
-    ai_payload["立即处理"],
-    ensure_ascii=False,
-    indent=2
-)}
+{json.dumps(ai_payload["立即处理"], ensure_ascii=False, indent=2)}
 
 【放量机会】
 
-{json.dumps(
-    ai_payload["放量机会"],
-    ensure_ascii=False,
-    indent=2
-)}
+{json.dumps(ai_payload["放量机会"], ensure_ascii=False, indent=2)}
 
 【重点观察】
 
-{json.dumps(
-    ai_payload["重点观察"],
-    ensure_ascii=False,
-    indent=2
-)}
+{json.dumps(ai_payload["重点观察"], ensure_ascii=False, indent=2)}
 
 请按照下面结构输出：
 
 # 今日军师结论
 
-用3‑5句话总结今天整个账户。
+用3-5句话总结今天整个账户。
 
 # 一、今天必须处理
 
@@ -2408,7 +2124,7 @@ with tabs[7]:
 
 曝光 → CTR → CPC → 点击 → 加购 → 成交 → ROI
 
-解释主要问题。
+解释主要问题。若无曝光数据，则从 CPC 开始分析。
 
 # 五、今天执行顺序
 
@@ -2431,29 +2147,19 @@ with tabs[7]:
                 try:
 
                     headers = {
-                        "Authorization":
-                            f"Bearer {api_key}",
-
-                        "Content‑Type":
-                            "application/json",
+                        "Authorization": f"Bearer {api_key}",
+                        "Content-Type": "application/json",
                     }
 
                     payload = {
-                        "model":
-                            "doubao‑pro‑4k",
-
+                        "model": "doubao-pro-4k",
                         "messages": [
                             {
-                                "role":
-                                    "user",
-
-                                "content":
-                                    prompt,
+                                "role": "user",
+                                "content": prompt,
                             }
                         ],
-
-                        "temperature":
-                            0.2,
+                        "temperature": 0.2,
                     }
 
                     response = requests.post(
@@ -2482,23 +2188,17 @@ with tabs[7]:
                             f"AI接口调用失败：{response.status_code}"
                         )
 
-                        st.code(
-                            response.text
-                        )
+                        st.code(response.text)
 
                 except Exception as e:
 
-                    st.error(
-                        f"AI调用异常：{e}"
-                    )
+                    st.error(f"AI调用异常：{e}")
 
         if st.session_state.last_ai_report:
 
             st.markdown("---")
 
-            st.markdown(
-                st.session_state.last_ai_report
-            )
+            st.markdown(st.session_state.last_ai_report)
 
             st.download_button(
                 "📥 下载今日军师报告",
@@ -2514,35 +2214,23 @@ with tabs[7]:
 
 st.markdown("---")
 
-with st.expander(
-    "🔧 数据源 / 字段识别 / 调试"
-):
+with st.expander("🔧 数据源 / 字段识别 / 调试"):
 
     st.write(
         f"原始数据：{len(df_raw):,} 行 × "
         f"{len(df_raw.columns)} 列"
     )
 
-    st.write(
-        f"标准化数据：{len(df):,} 行"
-    )
+    st.write(f"标准化数据：{len(df):,} 行")
 
-    st.write(
-        "识别到的字段："
-    )
+    st.write("识别到的字段：")
 
     detected = {}
 
     for key in COL_ALIASES:
+        detected[key] = resolve_col(df_raw, key)
 
-        detected[key] = resolve_col(
-            df_raw,
-            key
-        )
-
-    st.json(
-        detected
-    )
+    st.json(detected)
 
     st.dataframe(
         df_raw.head(20),
