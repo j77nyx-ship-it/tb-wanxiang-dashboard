@@ -3,6 +3,7 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 import plotly.express as px
+import requests
 from datetime import datetime
 
 st.set_page_config(page_title="万相台投放工作台 V9", layout="wide")
@@ -72,7 +73,6 @@ with st.sidebar:
 # ---------------- 缓存：读取 ----------------
 @st.cache_data(show_spinner="正在读取文件...")
 def load_raw(files_data):
-    """files_data: tuple[(name, bytes), ...]"""
     frames = []
     for name, data in files_data:
         try:
@@ -93,14 +93,11 @@ def build_normalized(df_raw):
         return pd.DataFrame()
     n = len(df_raw)
     out = pd.DataFrame(index=range(n))
-    # 日期
     c = resolve_col(df_raw, "日期")
     out["日期"] = pd.to_datetime(df_raw[c], errors="coerce") if c else pd.NaT
-    # 文本类
     for key in ["商品ID", "商品名称", "计划名称", "场景名称", "关键词", "人群包名称"]:
         c = resolve_col(df_raw, key)
         out[key] = df_raw[c].astype(str).str.strip() if c else ""
-    # 数值类
     for key, new_col in [
         ("花费", "花费"), ("成交金额", "成交金额"), ("成交笔数", "成交笔数"),
         ("点击量", "点击量"), ("展现量", "展现量"),
@@ -108,7 +105,6 @@ def build_normalized(df_raw):
     ]:
         c = resolve_col(df_raw, key)
         out[new_col] = pd.to_numeric(df_raw[c], errors="coerce").fillna(0) if c else 0.0
-    # ROI / CPC / CTR
     c = resolve_col(df_raw, "ROI")
     out["ROI"] = (pd.to_numeric(df_raw[c], errors="coerce")
                   .fillna(0).replace([np.inf, -np.inf], 0)) if c else \
@@ -124,28 +120,22 @@ def build_normalized(df_raw):
 # ---------------- 向量化：策略 ----------------
 def add_suggestions(df, target_roi, min_spend,
                     cost_col="花费", roi_col="ROI", click_col="点击量"):
-    """用 np.select 向量化生成 [等级/策略/执行] 三列。"""
     if df.empty:
         df["等级"] = df["策略"] = df["执行"] = ""
         return df
     cost  = pd.to_numeric(df[cost_col],  errors="coerce").fillna(0).values
-    roi   = pd.to_numeric(df[roi_col],   errors="coerce").fillna(0).replace(
-                [np.inf, -np.inf], 0).values
+    roi   = pd.to_numeric(df[roi_col],   errors="coerce").fillna(0).replace([np.inf, -np.inf], 0).values
     click = pd.to_numeric(df[click_col], errors="coerce").fillna(0).values
     c_samp   = cost < min_spend
     c_click0 = (~c_samp) & (click <= 0)
     c_good   = (~c_samp) & (click > 0) & (roi >= target_roi)
-    c_bad    = (~c_samp) & (click > 0) & (roi > 0) & (roi < target_roi * 0.6) \
-               & (cost > min_spend * 3)
+    c_bad    = (~c_samp) & (click > 0) & (roi > 0) & (roi < target_roi * 0.6) & (cost > min_spend * 3)
     c_warn   = (~c_samp) & (click > 0) & (roi > 0) & (roi < target_roi) & (~c_bad)
     c_none   = (~c_samp) & (click > 0) & (roi <= 0)
     conds = [c_samp, c_click0, c_good, c_bad, c_warn, c_none]
-    lvls  = ["🟡样本不足", "🟡零点击", "✅优质可放大", "🔻高花费低ROI",
-             "⚠️观察待优化", "🔴无成交"]
-    strs  = ["花费少继续观察", "有展现无点击", "投产达标可放大",
-             "花费高投产差", "略低于目标", "有花费无订单"]
-    acts  = ["无操作", "降出价或优化素材", "预算 +10~20%",
-             "降价 30% 或暂停", "出价下调 10-20% 观察", "降价，无改善暂停"]
+    lvls  = ["🟡样本不足", "🟡零点击", "✅优质可放大", "🔻高花费低ROI", "⚠️观察待优化", "🔴无成交"]
+    strs  = ["花费少继续观察", "有展现无点击", "投产达标可放大", "花费高投产差", "略低于目标", "有花费无订单"]
+    acts  = ["无操作", "降出价或优化素材", "预算 +10~20%", "降价 30% 或暂停", "出价下调 10‑20% 观察", "降价，无改善暂停"]
     df["等级"] = np.select(conds, lvls, default="🔴无成交")
     df["策略"] = np.select(conds, strs, default="有花费无订单")
     df["执行"] = np.select(conds, acts, default="降价，无改善暂停")
@@ -153,13 +143,6 @@ def add_suggestions(df, target_roi, min_spend,
 
 # ---------------- 分级预警 ----------------
 def add_warnings(df, cpc_max, ctr_min):
-    """分级预警：
-       CPC  > cpc_max*3            -> 🚨CPC严重超标
-       CPC  > cpc_max              -> ⚠️CPC偏高
-       CTR  < ctr_min*0.5          -> 🚨CTR严重过低
-       CTR  < ctr_min (且>0)       -> ⚠️CTR偏低
-       标记：无异常 -> ✅正常；含🚨 -> 🚨严重；其余 -> ⚠️预警
-    """
     if df.empty:
         df["预警标记"] = df["预警说明"] = ""
         return df
@@ -192,8 +175,7 @@ def add_warnings(df, cpc_max, ctr_min):
 def group_sum(df, grp_keys, target_roi, min_spend):
     if df.empty or not grp_keys:
         return pd.DataFrame()
-    grp_keys = [k for k in grp_keys
-                if k in df.columns and df[k].astype(str).str.strip().ne("").any()]
+    grp_keys = [k for k in grp_keys if k in df.columns and df[k].astype(str).str.strip().ne("").any()]
     if not grp_keys:
         return pd.DataFrame()
     agg = {}
@@ -209,16 +191,14 @@ def group_sum(df, grp_keys, target_roi, min_spend):
                     if {"总花费", "总成交金额"} <= set(g.columns) else 0)
     g["平均CPC"] = (np.where(g["总点击"] > 0, g["总花费"] / g["总点击"], 0)
                     if {"总点击", "总花费"} <= set(g.columns) else 0)
-    g = add_suggestions(g, target_roi, min_spend,
-                        cost_col="总花费", roi_col="整体ROI", click_col="总点击")
+    g = add_suggestions(g, target_roi, min_spend, cost_col="总花费", roi_col="整体ROI", click_col="总点击")
     return g
 
 # ==============================================================
 #                       主流程
 # ==============================================================
 if not upload_files:
-    st.info("👈 上传万相台报表：商品报表看【待调整商品】；计划报表看【计划优化】；"
-            "关键词明细看【商品×关键词】。字段会自动识别。")
+    st.info("👈 上传万相台报表：商品报表看【待调整商品】；计划报表看【计划优化】；关键词明细看【商品×关键词】。字段会自动识别。")
     st.stop()
 files_data = tuple((f.name, f.getvalue()) for f in upload_files)
 df_raw = load_raw(files_data)
@@ -234,14 +214,14 @@ df = build_normalized(df_raw)
 if df.empty:
     st.error("数据为空，请检查报表格式。")
     st.stop()
+
 # ---- 全局筛选 ----
 with st.sidebar:
     st.divider()
     st.header("🗓 日期 & 关键词筛选")
     if df["日期"].notna().any():
         dmin, dmax = df["日期"].min().date(), df["日期"].max().date()
-        date_range = st.date_input("日期范围", value=(dmin, dmax),
-                                   min_value=dmin, max_value=dmax)
+        date_range = st.date_input("日期范围", value=(dmin, dmax), min_value=dmin, max_value=dmax)
     else:
         date_range = None
     kw = st.text_input("商品名称包含关键词", "")
@@ -251,17 +231,16 @@ if date_range and len(date_range) == 2:
     dff = dff[(dff["日期"].isna()) | ((dff["日期"] >= start) & (dff["日期"] <= end))]
 if kw:
     dff = dff[dff["商品名称"].str.contains(kw, case=False, na=False)]
-# ---- 生成带建议 / 预警的明细 ----
+
 df_detail = add_suggestions(dff.copy(), roi_target, min_cost)
 df_detail = add_warnings(df_detail, max_cpc_warn, min_ctr_warn)
-# ---- 分组 ----
+
 df_prod_sum  = group_sum(dff, ["商品ID", "商品名称"], roi_target, min_cost)
 df_plan_sum  = group_sum(dff, ["计划名称", "场景名称"], roi_target, min_cost)
 df_kw_sum    = group_sum(dff, ["关键词"], roi_target, min_cost)
 df_crowd_sum = group_sum(dff, ["人群包名称"], roi_target, min_cost)
 df_item_kw   = group_sum(dff, ["商品名称", "商品ID", "关键词"], roi_target, min_cost) \
-               if (dff["关键词"].astype(str).str.strip().ne("").any()
-                   and dff["商品名称"].astype(str).str.strip().ne("").any()) else pd.DataFrame()
+               if (dff["关键词"].astype(str).str.strip().ne("").any() and dff["商品名称"].astype(str).str.strip().ne("").any()) else pd.DataFrame()
 
 # ==============================================================
 #                       大盘 KPI
@@ -274,28 +253,82 @@ st.markdown("---")
 c1, c2, c3, c4 = st.columns(4)
 c1.metric("总花费",   f"¥{tc:,.2f}")
 c2.metric("总 GMV",   f"¥{tg:,.2f}")
-c3.metric("整体 ROI", f"{troi:.2f}", delta=f"目标 {roi_target}",
-          delta_color="normal" if troi >= roi_target else "inverse")
+c3.metric("整体 ROI", f"{troi:.2f}", delta=f"目标 {roi_target}", delta_color="normal" if troi >= roi_target else "inverse")
 c4.metric("总点击",   f"{int(tclk):,}")
 gc = int((df_detail["等级"] == "✅优质可放大").sum())
 bc = int((df_detail["等级"] == "🔻高花费低ROI").sum())
 nc = int((df_detail["等级"] == "🔴无成交").sum())
 sc = int((df_detail["预警标记"] == "🚨严重").sum())
 if troi >= roi_target:
-    diag = (f"✅ 整体 ROI ({troi:.2f}) 达标。优质 {gc} 个可放大；"
-            f"关注 {bc} 个高花费低投产；严重预警 {sc} 个。")
+    diag = (f"✅ 整体 ROI ({troi:.2f}) 达标。优质 {gc} 个可放大；关注 {bc} 个高花费低投产；严重预警 {sc} 个。")
 else:
-    diag = (f"⚠️ 整体 ROI ({troi:.2f}) 低于 {roi_target}。"
-            f"优先处理 {bc} 个高花费低ROI；优质 {gc} 个可放大；"
-            f"{nc} 个无成交建议关停；严重预警 {sc} 个。")
+    diag = (f"⚠️ 整体 ROI ({troi:.2f}) 低于 {roi_target}。优先处理 {bc} 个高花费低ROI；优质 {gc} 个可放大；{nc} 个无成交建议关停；严重预警 {sc} 个。")
 st.info(diag)
+
+# ====================== 🤖 AI投放一键诊断【豆包开放平台】 ======================
+st.markdown("---")
+st.subheader("🤖 AI投放一键诊断")
+need_levels = ["🔻高花费低ROI", "🔴无成交", "⚠️观察待优化", "🟡零点击"]
+with st.expander("🔐 豆包开放平台API配置（仅浏览器会话保存，不会上传服务器）", expanded=False):
+    doubao_api_key = st.text_input("Doubao API‑Key", type="password", placeholder="开放平台拿到的API Key")
+
+run_ai = st.button("✨生成AI投放诊断报告", disabled=not bool(doubao_api_key))
+ai_report = ""
+
+if run_ai:
+    with st.spinner("AI正在分析万相台投放数据，请稍候…"):
+        try:
+            view_ai = df_prod_sum[df_prod_sum["等级"].isin(need_levels)].copy()
+            csv_text_ai = view_ai[["商品ID","商品名称","总花费","总成交金额","整体ROI","等级","执行"]].to_csv(index=False)
+            prompt = f"""
+你是资深淘宝万相台投放优化专家，严格基于下面数据输出诊断报告。
+【投放阈值】
+保本目标ROI：{roi_target}
+最小有效花费：{min_cost}元
+CPC过高预警：{max_cpc_warn}元
+
+【大盘汇总】
+总花费：{tc:.2f}元
+总GMV：{tg:.2f}元
+整体ROI：{troi:.2f}
+总点击：{int(tclk):,}
+
+【待调整商品清单csv】
+{csv_text_ai}
+
+输出要求：
+1. 大盘整体问题诊断；
+2. TOP5优先处理商品（高花费低ROI、无成交优先）；
+3. TOP5建议放大的优质商品；
+4. 给出万相台后台可直接复制执行的操作清单；
+5. 简短总结接下来2‑3天观察重点。
+输出语言简洁，适合运营直接照着后台操作，不要冗余废话。
+"""
+            headers = {"Authorization": f"Bearer {doubao_api_key}", "Content‑Type":"application/json"}
+            payload = {
+                "model":"doubao‑pro‑4k",
+                "messages":[{"role":"user","content":prompt}],
+                "temperature":0.4
+            }
+            resp = requests.post("https://open.doubao.com/api/v1/chat/completions", headers=headers, json=payload, timeout=60)
+            resp_json = resp.json()
+            if resp.status_code == 200:
+                ai_report = resp_json["choices"][0]["message"]["content"]
+            else:
+                ai_report = f"❌API调用失败：{resp_json}"
+        except Exception as e:
+            ai_report = f"❌异常：{str(e)}"
+
+if ai_report:
+    st.markdown("#### 📋AI投放诊断报告")
+    st.markdown(ai_report)
+    st.download_button("📥复制/下载AI报告", data=ai_report, file_name="AI万相台投放报告.txt", mime="text/plain")
+# ====================== 🤖 AI投放一键诊断【结束】 ======================
 
 # ==============================================================
 #                       分页签
 # ==============================================================
-need_levels = ["🔻高花费低ROI", "🔴无成交", "⚠️观察待优化", "🟡零点击"]
 tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs(["🚨待调整商品(默认)", "📦商品优化", "📋计划优化", "🎯商品×关键词", "🔑关键词优化", "👥人群优化", "明细 / 趋势 / 记录"])
-
 COLOR_MAP = {
     "🔻高花费低ROI": "#e74c3c", "🔴无成交": "#c0392b",
     "⚠️观察待优化":  "#f39c12", "🟡零点击": "#95a5a6",
@@ -323,25 +356,21 @@ def render_group_tab(df_group, entity_name, key_col, info_text, filename, defaul
         with c1:
             fig = px.bar(
                 pe.nlargest(top_n, "总花费"), x="总花费", y=key_col,
-                orientation="h", title=f"TOP{top_n} {entity_name} 花费",
-                text_auto=".1f",
+                orientation="h", title=f"TOP{top_n} {entity_name} 花费", text_auto=".1f",
             )
             fig.update_layout(yaxis=dict(autorange="reversed"), height=420)
             st.plotly_chart(fig, use_container_width=True)
         with c2:
             fig2 = px.bar(
                 pe.sort_values("整体ROI", ascending=False).head(top_n),
-                x=key_col, y="整体ROI", color="等级",
-                color_discrete_map=COLOR_MAP,
-                title=f"{entity_name} ROI（红=保本 {roi_target}）",
-                text_auto=".2f",
+                x=key_col, y="整体ROI", color="等级", color_discrete_map=COLOR_MAP,
+                title=f"{entity_name} ROI（红=保本 {roi_target}）", text_auto=".2f",
             )
             fig2.add_hline(y=roi_target, line_dash="dash", line=dict(color="red"))
             fig2.update_layout(xaxis_tickangle=-45, height=420)
             st.plotly_chart(fig2, use_container_width=True)
     show = [c for c in [key_col, "总花费", "总成交金额", "整体ROI", "平均CPC",
-                        "总点击", "总加购", "等级", "策略", "执行"]
-            if c in view.columns]
+                        "总点击", "总加购", "等级", "策略", "执行"] if c in view.columns]
     st.dataframe(
         view[show].round(2),
         use_container_width=True,
@@ -355,14 +384,13 @@ def render_group_tab(df_group, entity_name, key_col, info_text, filename, defaul
     )
     st.download_button(
         f"📥 下载{entity_name}清单",
-        data=view.to_csv(index=False).encode("utf-8-sig"),
+        data=view.to_csv(index=False).encode("utf‑8‑sig"),
         file_name=filename, mime="text/csv", key=f"dl_{key_col}",
     )
 
 # ---------- Tab 1: 待调整商品 ----------
 with tab1:
     st.markdown("默认展示【需要调整】的商品（高花费低ROI / 无成交 / 观察 / 零点击）。")
-    st.info("💡AI分析方式：下载「待调整商品清单.csv」，上传豆包网页版粘贴提示词即可得到优化报告。")
     if df_prod_sum.empty:
         st.warning("未识别【商品名称】列。")
     else:
@@ -389,8 +417,7 @@ with tab1:
                 fk.update_layout(yaxis=dict(autorange="reversed"), height=460)
                 st.plotly_chart(fk, use_container_width=True)
         show = [c for c in ["商品ID", "商品名称", "总花费", "总成交金额",
-                            "整体ROI", "总点击", "总加购", "等级", "策略", "执行"]
-                if c in view.columns]
+                            "整体ROI", "总点击", "总加购", "等级", "策略", "执行"] if c in view.columns]
         st.dataframe(
             view[show].round(2),
             use_container_width=True, hide_index=True,
@@ -401,7 +428,7 @@ with tab1:
             },
         )
         st.download_button("📥 下载待调整商品清单",
-                           data=view.to_csv(index=False).encode("utf-8-sig"),
+                           data=view.to_csv(index=False).encode("utf‑8‑sig"),
                            file_name="待调整商品清单.csv", mime="text/csv")
 
 # ---------- Tab 2: 商品优化 ----------
@@ -412,7 +439,6 @@ with tab2:
         "全部商品清单.csv",
         default_levels=list(COLOR_MAP.keys()),
     )
-
 # ---------- Tab 3: 计划优化 ----------
 with tab3:
     render_group_tab(
@@ -421,7 +447,6 @@ with tab3:
         "计划优化清单.csv",
         default_levels=list(COLOR_MAP.keys()),
     )
-
 # ---------- Tab 4: 商品 × 关键词 ----------
 with tab4:
     render_group_tab(
@@ -430,7 +455,6 @@ with tab4:
         "商品关键词优化清单.csv",
         default_levels=list(COLOR_MAP.keys()),
     )
-
 # ---------- Tab 5: 关键词优化 ----------
 with tab5:
     render_group_tab(
@@ -439,7 +463,6 @@ with tab5:
         "关键词清单.csv",
         default_levels=list(COLOR_MAP.keys()),
     )
-
 # ---------- Tab 6: 人群优化 ----------
 with tab6:
     render_group_tab(
@@ -448,11 +471,9 @@ with tab6:
         "人群清单.csv",
         default_levels=list(COLOR_MAP.keys()),
     )
-
 # ---------- Tab 7: 明细 / 趋势 / 记录 ----------
 with tab7:
     st.markdown("### 🎯 明细清单")
-    # 预警级别多选
     warn_filter = st.multiselect(
         "预警级别筛选",
         ["🚨严重", "⚠️预警", "✅正常"],
@@ -466,8 +487,7 @@ with tab7:
         dv = dv[dv["预警标记"].isin(warn_filter)]
     show = [c for c in ["日期", "商品ID", "商品名称", "计划名称", "关键词", "人群包名称",
                         "花费", "成交金额", "ROI", "CPC", "CTR", "加购数",
-                        "预警标记", "预警说明", "等级", "策略", "执行"]
-            if c in dv.columns]
+                        "预警标记", "预警说明", "等级", "策略", "执行"] if c in dv.columns]
     st.dataframe(
         dv[show].round(3),
         use_container_width=True, hide_index=True,
@@ -480,7 +500,7 @@ with tab7:
         },
     )
     st.download_button("📥 下载筛选明细",
-                       data=dv.to_csv(index=False).encode("utf-8-sig"),
+                       data=dv.to_csv(index=False).encode("utf‑8‑sig"),
                        file_name="筛选明细.csv", mime="text/csv")
     st.markdown("### 📈 日度时间趋势")
     if df_detail["日期"].notna().any():
@@ -493,8 +513,7 @@ with tab7:
         c1, c2 = st.columns(2)
         with c1:
             st.plotly_chart(
-                px.line(dd, x="日期", y=["花费", "成交金额"], markers=True,
-                        title="每日花费 vs 成交金额"),
+                px.line(dd, x="日期", y=["花费", "成交金额"], markers=True, title="每日花费 vs 成交金额"),
                 use_container_width=True,
             )
         with c2:
@@ -519,7 +538,7 @@ with tab7:
             note = st.text_input("备注")
         if st.form_submit_button("✅ 保存记录"):
             new_row = {
-                "操作时间": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "操作时间": datetime.now().strftime("%Y‑%m‑%d %H:%M:%S"),
                 "推广类型": t1, "对象名称": t2,
                 "执行动作": act, "调整内容": adj, "备注": note,
             }
@@ -531,6 +550,6 @@ with tab7:
     st.dataframe(st.session_state.action_log, hide_index=True, use_container_width=True)
     st.download_button(
         "📥 导出操作记录",
-        data=st.session_state.action_log.to_csv(index=False).encode("utf-8-sig"),
+        data=st.session_state.action_log.to_csv(index=False).encode("utf‑8‑sig"),
         file_name="操作记录.csv", mime="text/csv",
     )
