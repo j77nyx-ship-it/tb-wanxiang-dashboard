@@ -17,9 +17,12 @@ with st.sidebar:
 
 #策略函数
 def get_suggest(row, target_roi, min_spend):
-    cost = row["花费"]
-    roi = row["ROI"] if not np.isinf(row["ROI"]) else 0
+    cost = row.get("花费",0)
+    roi = row.get("ROI",0)
+    if np.isinf(roi) or np.isnan(roi):
+        roi = 0
     click = row.get("点击量",0)
+
     if cost < min_spend:
         return {"等级":"🟡样本不足","策略":"花费少继续观察","执行":"无操作"}
     if click <=0:
@@ -29,7 +32,7 @@ def get_suggest(row, target_roi, min_spend):
     elif roi>0 and roi < target_roi*0.6 and cost> min_spend*3:
         return {"等级":"🔻高花费低ROI","策略":"花费高投产差","执行":"降价30%或暂停"}
     elif roi>0 and roi < target_roi:
-        return {"等级":"⚠️观察待优化","策略":"略低于目标","执行":"出价下调10‑20%观察"}
+        return {"等级":"⚠️观察待优化","策略":"略低于目标","执行":"出价下调10-20%观察"}
     else:
         return {"等级":"🔴无成交","策略":"有花费无订单","执行":"降价，无效就暂停"}
 
@@ -59,15 +62,18 @@ if upload_file is not None:
     exist_cols = [c for c in keep_cols if c in df_raw.columns]
     df = df_raw[exist_cols].copy()
 
-    #数值清洗
-    df["花费"] = pd.to_numeric(df["花费"], errors="coerce").fillna(0)
-    df["展现量"] = pd.to_numeric(df["展现量"], errors="coerce").fillna(0)
-    df["点击量"] = pd.to_numeric(df["点击量"], errors="coerce").fillna(0)
-    df["成交金额"] = pd.to_numeric(df["成交金额"], errors="coerce").fillna(0)
-    df["成交笔数"] = pd.to_numeric(df["成交笔数"], errors="coerce").fillna(0)
+    # 只对实际存在的列做数值转换，防止KeyError
+    num_cols = ["花费","展现量","点击量","成交金额","成交笔数"]
+    for col in num_cols:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
 
+    # 衍生指标，使用get安全读取
     df["CPC"] = np.where(df["点击量"]>0, df["花费"]/df["点击量"],0)
-    df["ROI"] = np.where(df["花费"]>0, df["成交金额"]/df["花费"],0)
+    if "成交金额" in df.columns and "花费" in df.columns:
+        df["ROI"] = np.where(df["花费"]>0, df["成交金额"]/df["花费"],0)
+    else:
+        df["ROI"] = 0
     df["CTR"] = np.where(df["展现量"]>0, df["点击量"]/df["展现量"],0)
 
     #生成策略+预警
@@ -77,19 +83,21 @@ if upload_file is not None:
     df_w = pd.DataFrame(warn_out)
     df_out = pd.concat([df.reset_index(drop=True), df_s, df_w], axis=1)
 
-    #大盘指标
+    #大盘指标（安全读取，不存在字段赋值0）
     st.markdown("---")
-    tc = df["花费"].sum()
-    tgmv = df["成交金额"].sum()
+    tc = df["花费"].sum() if "花费" in df.columns else 0
+    tgmv = df["成交金额"].sum() if "成交金额" in df.columns else 0
     troi = tgmv/tc if tc>0 else 0
+    total_click = df["点击量"].sum() if "点击量" in df.columns else 0
+
     c1,c2,c3,c4 = st.columns(4)
     with c1:st.metric("总花费",f"{tc:.2f}元")
     with c2:st.metric("总GMV",f"{tgmv:.2f}元")
     with c3:st.metric("整体ROI",f"{troi:.2f}", delta=f"目标{roi_target}")
-    with c4:st.metric("总点击",f"{int(df['点击量'].sum()):,}")
+    with c4:st.metric("总点击",f"{int(total_click):,}")
 
     #分渠道
-    if "推广类型" in df.columns:
+    if "推广类型" in df.columns and "花费" in df.columns and "成交金额" in df.columns:
         st.markdown("---")
         st.subheader("分渠道对比")
         g = df.groupby("推广类型").agg({"花费":"sum","成交金额":"sum"}).reset_index()
@@ -110,4 +118,4 @@ if upload_file is not None:
     st.download_button("📥下载优化清单CSV", data=csv_text, file_name="万相台_优化清单.csv")
 
 else:
-    st.info("👈上传Excel，表头【花费】，建议加上推广类型列")
+    st.info("👈上传Excel，表头【花费】，建议加上推广类型、成交金额列")
