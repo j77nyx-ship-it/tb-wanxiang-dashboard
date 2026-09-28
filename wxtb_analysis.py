@@ -58,7 +58,8 @@ if upload_file is not None:
     st.subheader("原始预览")
     st.dataframe(df_raw.head(5), hide_index=True)
 
-    keep_cols = ["花费","展现量","点击量","成交金额","成交笔数","推广类型","关键词","人群包名称","商品名称"]
+    #新增【商品ID】字段
+    keep_cols = ["花费","展现量","点击量","成交金额","成交笔数","推广类型","关键词","人群包名称","商品名称","商品ID"]
     exist_cols = [c for c in keep_cols if c in df_raw.columns]
     df = df_raw[exist_cols].copy()
 
@@ -107,15 +108,15 @@ if upload_file is not None:
         fig.add_hline(y=roi_target, line_dash="dash", line_color="red")
         st.plotly_chart(fig, use_container_width=True)
 
-    #优化清单
+    #优化清单【加入商品ID，有就显示，没有自动跳过】
     st.markdown("---")
-    st.subheader("🎯优化执行清单")
-    show_cols = ["推广类型","关键词","人群包名称","商品名称","花费","成交金额","ROI","CPC","预警标记","等级","策略","执行"]
+    st.subheader("🎯优化执行清单（含商品ID）")
+    show_cols = ["推广类型","关键词","人群包名称","商品ID","商品名称","花费","成交金额","ROI","CPC","预警标记","等级","策略","执行"]
     real_show = [c for c in show_cols if c in df_out.columns]
     st.dataframe(df_out[real_show].round(2), use_container_width=True, hide_index=True)
 
     csv_text = df_out.to_csv(index=False, encoding="utf-8-sig")
-    st.download_button("📥下载优化清单CSV", data=csv_text, file_name="万相台_优化清单.csv")
+    st.download_button("📥下载优化清单CSV（含商品ID）", data=csv_text, file_name="万相台_优化清单_带商品ID.csv")
 
 else:
-    st.info("👈上传Excel，表头【花费】，建议加上推广类型、成交金额列")
+    st.info("👈上传Excel，表头【花费】；下载全站报表时记得勾选导出【商品ID】，方便后台定位宝贝")
