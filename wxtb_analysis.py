@@ -46,7 +46,7 @@ def get_suggest(row, target_roi, min_spend):
     elif roi>0 and roi < target_roi*0.6 and cost> min_spend*3:
         return {"等级":"🔻高花费低ROI","策略":"花费高投产差，浪费预算","执行":"降价30%或直接暂停"}
     elif roi>0 and roi < target_roi:
-        return {"等级":"⚠️观察待优化","策略":"略低于保本目标，小幅压价观察","执行":"出价下调10‑20%观察2‑3天"}
+        return {"等级":"⚠️观察待优化","策略":"略低于保本目标，小幅压价观察","执行":"出价下调10-20%观察2-3天"}
     else:
         return {"等级":"🔴无成交","策略":"有花费无订单产出","执行":"优先降价，无改善直接暂停"}
 
@@ -114,42 +114,78 @@ if len(df_raw_list)>0:
         group_keys_prod.append("商品名称")
     df_prod_sum = pd.DataFrame()
     if len(group_keys_prod)>=1:
-        df_prod_sum = df.groupby(group_keys_prod, dropna=False).agg(
-            总花费=("花费","sum"),总成交金额=("成交金额","sum"),总点击=("点击量","sum"),
-            总展现=("展现量","sum"),总成交笔数=("成交笔数","sum")
-        ).reset_index()
-        df_prod_sum["整体ROI"] = np.where(df_prod_sum["总花费"]>0, df_prod_sum["总成交金额"]/df_prod_sum["总花费"],0)
-        df_prod_sum["平均CPC"] = np.where(df_prod_sum["总点击"]>0, df_prod_sum["总花费"]/df_prod_sum["总点击"],0)
-        prod_sug = [get_suggest({"花费":r["总花费"],"ROI":r["整体ROI"],"点击量":r["总点击"]},roi_target,min_cost) for _,r in df_prod_sum.iterrows()]
-        df_prod_sum = pd.concat([df_prod_sum, pd.DataFrame(prod_sug)],axis=1)
+        agg_dict = {}
+        if "花费" in df.columns:
+            agg_dict["总花费"]=("花费","sum")
+        if "成交金额" in df.columns:
+            agg_dict["总成交金额"]=("成交金额","sum")
+        if "点击量" in df.columns:
+            agg_dict["总点击"]=("点击量","sum")
+        if "展现量" in df.columns:
+            agg_dict["总展现"]=("展现量","sum")
+        if "成交笔数" in df.columns:
+            agg_dict["总成交笔数"]=("成交笔数","sum")
+        if agg_dict:
+            df_prod_sum = df.groupby(group_keys_prod, dropna=False).agg(**agg_dict).reset_index()
+            if "总花费" in df_prod_sum.columns and "总成交金额" in df_prod_sum.columns:
+                df_prod_sum["整体ROI"] = np.where(df_prod_sum["总花费"]>0, df_prod_sum["总成交金额"]/df_prod_sum["总花费"],0)
+            if "总点击" in df_prod_sum.columns and "总花费" in df_prod_sum.columns:
+                df_prod_sum["平均CPC"] = np.where(df_prod_sum["总点击"]>0, df_prod_sum["总花费"]/df_prod_sum["总点击"],0)
+            prod_sug = []
+            for _,r in df_prod_sum.iterrows():
+                d = {
+                    "花费":r.get("总花费",0),
+                    "ROI":r.get("整体ROI",0),
+                    "点击量":r.get("总点击",0)
+                }
+                prod_sug.append(get_suggest(d,roi_target,min_cost))
+            df_prod_sum = pd.concat([df_prod_sum, pd.DataFrame(prod_sug)],axis=1)
 
     # =========关键词汇总 =========
     df_kw_sum = pd.DataFrame()
     if "关键词" in df.columns:
-        df_kw_sum = df.groupby("关键词",dropna=False).agg(
-            总花费=("花费","sum"),总成交金额=("成交金额","sum"),总点击=("点击量","sum"),总展现=("展现量","sum")
-        ).reset_index()
-        df_kw_sum["ROI"] = np.where(df_kw_sum["总花费"]>0, df_kw_sum["总成交金额"]/df_kw_sum["总花费"],0)
-        df_kw_sum["CPC"] = np.where(df_kw_sum["总点击"]>0, df_kw_sum["总花费"]/df_kw_sum["总点击"],0)
-        kw_sug = [get_suggest({"花费":r["总花费"],"ROI":r["ROI"],"点击量":r["总点击"]},roi_target,min_cost) for _,r in df_kw_sum.iterrows()]
-        df_kw_sum = pd.concat([df_kw_sum,pd.DataFrame(kw_sug)],axis=1)
+        agg_kw = {}
+        if "花费" in df.columns: agg_kw["总花费"]=("花费","sum")
+        if "成交金额" in df.columns: agg_kw["总成交金额"]=("成交金额","sum")
+        if "点击量" in df.columns: agg_kw["总点击"]=("点击量","sum")
+        if "展现量" in df.columns: agg_kw["总展现"]=("展现量","sum")
+        if agg_kw:
+            df_kw_sum = df.groupby("关键词",dropna=False).agg(**agg_kw).reset_index()
+            if "总花费" in df_kw_sum.columns and "总成交金额" in df_kw_sum.columns:
+                df_kw_sum["ROI"] = np.where(df_kw_sum["总花费"]>0, df_kw_sum["总成交金额"]/df_kw_sum["总花费"],0)
+            if "总点击" in df_kw_sum.columns and "总花费" in df_kw_sum.columns:
+                df_kw_sum["CPC"] = np.where(df_kw_sum["总点击"]>0, df_kw_sum["总花费"]/df_kw_sum["总点击"],0)
+            kw_sug = []
+            for _,r in df_kw_sum.iterrows():
+                d={"花费":r.get("总花费",0),"ROI":r.get("ROI",0),"点击量":r.get("总点击",0)}
+                kw_sug.append(get_suggest(d,roi_target,min_cost))
+            df_kw_sum = pd.concat([df_kw_sum,pd.DataFrame(kw_sug)],axis=1)
 
     # =========人群汇总 =========
     df_crowd_sum = pd.DataFrame()
     if "人群包名称" in df.columns:
-        df_crowd_sum = df.groupby("人群包名称",dropna=False).agg(
-            总花费=("花费","sum"),总成交金额=("成交金额","sum"),总点击=("点击量","sum"),总展现=("展现量","sum")
-        ).reset_index()
-        df_crowd_sum["ROI"] = np.where(df_crowd_sum["总花费"]>0, df_crowd_sum["总成交金额"]/df_crowd_sum["总花费"],0)
-        df_crowd_sum["CPC"] = np.where(df_crowd_sum["总点击"]>0, df_crowd_sum["总花费"]/df_crowd_sum["总点击"],0)
-        crowd_sug = [get_suggest({"花费":r["总花费"],"ROI":r["ROI"],"点击量":r["总点击"]},roi_target,min_cost) for _,r in df_crowd_sum.iterrows()]
-        df_crowd_sum = pd.concat([df_crowd_sum,pd.DataFrame(crowd_sug)],axis=1)
+        agg_crowd = {}
+        if "花费" in df.columns: agg_crowd["总花费"]=("花费","sum")
+        if "成交金额" in df.columns: agg_crowd["总成交金额"]=("成交金额","sum")
+        if "点击量" in df.columns: agg_crowd["总点击"]=("点击量","sum")
+        if "展现量" in df.columns: agg_crowd["总展现"]=("展现量","sum")
+        if agg_crowd:
+            df_crowd_sum = df.groupby("人群包名称",dropna=False).agg(**agg_crowd).reset_index()
+            if "总花费" in df_crowd_sum.columns and "总成交金额" in df_crowd_sum.columns:
+                df_crowd_sum["ROI"] = np.where(df_crowd_sum["总花费"]>0, df_crowd_sum["总成交金额"]/df_crowd_sum["总花费"],0)
+            if "总点击" in df_crowd_sum.columns and "总花费" in df_crowd_sum.columns:
+                df_crowd_sum["CPC"] = np.where(df_crowd_sum["总点击"]>0, df_crowd_sum["总花费"]/df_crowd_sum["总点击"],0)
+            crowd_sug = []
+            for _,r in df_crowd_sum.iterrows():
+                d={"花费":r.get("总花费",0),"ROI":r.get("ROI",0),"点击量":r.get("总点击",0)}
+                crowd_sug.append(get_suggest(d,roi_target,min_cost))
+            df_crowd_sum = pd.concat([df_crowd_sum,pd.DataFrame(crowd_sug)],axis=1)
 
-    # =========大盘指标 =========
-    total_cost = df["花费"].sum()
-    total_gmv = df["成交金额"].sum()
+    # =========大盘指标【修复：全部做列存在判断】 =========
+    total_cost = df["花费"].sum() if "花费" in df.columns else 0
+    total_gmv = df["成交金额"].sum() if "成交金额" in df.columns else 0
     total_roi = total_gmv / total_cost if total_cost>0 else 0
-    total_click = df["点击量"].sum()
+    total_click = df["点击量"].sum() if "点击量" in df.columns else 0
 
     st.markdown("---")
     c1,c2,c3,c4 = st.columns(4)
@@ -176,7 +212,7 @@ if len(df_raw_list)>0:
     st.info(diag_text)
 
     #分渠道图表
-    if "推广类型" in df.columns:
+    if "推广类型" in df.columns and "花费" in df.columns and "成交金额" in df.columns:
         st.markdown("---")
         st.subheader("📌分渠道对比")
         df_channel = df.groupby("推广类型").agg({"花费":"sum","成交金额":"sum"}).reset_index()
@@ -210,11 +246,12 @@ if len(df_raw_list)>0:
 
     with tab3:
         if len(df_kw_sum)>0:
-            kw_eff = df_kw_sum[df_kw_sum["总花费"]>=min_cost].copy()
+            kw_eff = df_kw_sum[df_kw_sum["总花费"]>=min_cost].copy() if "总花费" in df_kw_sum.columns else df_kw_sum
             st.subheader("🔑关键词优化分析")
-            if len(kw_eff)>0:
+            if len(kw_eff)>0 and "总花费" in kw_eff.columns:
                 fig_k1 = px.bar(kw_eff.nlargest(15,"总花费"), x="总花费", y="关键词", orientation="h", title="TOP15关键词花费排行",text_auto=".1f")
                 st.plotly_chart(fig_k1,use_container_width=True)
+            if len(kw_eff)>0 and "ROI" in kw_eff.columns:
                 fig_k2 = px.bar(kw_eff.sort_values("ROI",ascending=False).head(20),x="关键词",y="ROI",title="关键词ROI对比",text_auto=".2f")
                 fig_k2.add_hline(y=roi_target,line_dash="dash",line_color="red")
                 fig_k2.update_layout(xaxis_tickangle=-45)
@@ -229,12 +266,13 @@ if len(df_raw_list)>0:
 
     with tab4:
         if len(df_crowd_sum)>0:
-            crowd_eff = df_crowd_sum[df_crowd_sum["总花费"]>=min_cost].copy()
+            crowd_eff = df_crowd_sum[df_crowd_sum["总花费"]>=min_cost].copy() if "总花费" in df_crowd_sum.columns else df_crowd_sum
             st.subheader("👥人群包优化分析")
-            if len(crowd_eff)>0:
+            if len(crowd_eff)>0 and "总花费" in crowd_eff.columns:
                 fig_c1 = px.bar(crowd_eff.sort_values("总花费",ascending=False).head(15),x="人群包名称",y=["总花费","总成交金额"],barmode="group",title="TOP15人群花费vs成交")
                 fig_c1.update_layout(xaxis_tickangle=-45)
                 st.plotly_chart(fig_c1,use_container_width=True)
+            if len(crowd_eff)>0 and "ROI" in crowd_eff.columns:
                 fig_c2 = px.bar(crowd_eff.sort_values("ROI",ascending=False).head(20),x="人群包名称",y="ROI",title="人群包ROI对比",text_auto=".2f")
                 fig_c2.add_hline(y=roi_target,line_dash="dash",line_color="red")
                 fig_c2.update_layout(xaxis_tickangle=-45)
@@ -256,16 +294,24 @@ if len(df_raw_list)>0:
 
     with tab6:
         st.subheader("📈日度时间趋势（需要报表包含【日期】列，支持多文件上传）")
-        if "日期" in df.columns:
+        if "日期" in df.columns and "花费" in df.columns:
             df["日期"] = pd.to_datetime(df["日期"], errors="coerce")
-            df_day = df.groupby("日期").agg(花费=("花费","sum"),成交金额=("成交金额","sum"),点击量=("点击量","sum"),展现量=("展现量","sum")).reset_index()
-            df_day["ROI"] = np.where(df_day["花费"]>0, df_day["成交金额"]/df_day["花费"],0)
-            df_day["CPC"] = np.where(df_day["点击量"]>0, df_day["花费"]/df_day["点击量"],0)
+            day_agg = {}
+            day_agg["花费"]=("花费","sum")
+            if "成交金额" in df.columns: day_agg["成交金额"]=("成交金额","sum")
+            if "点击量" in df.columns: day_agg["点击量"]=("点击量","sum")
+            if "展现量" in df.columns: day_agg["展现量"]=("展现量","sum")
+            df_day = df.groupby("日期").agg(**day_agg).reset_index()
+            if "花费" in df_day.columns and "成交金额" in df_day.columns:
+                df_day["ROI"] = np.where(df_day["花费"]>0, df_day["成交金额"]/df_day["花费"],0)
+            if "点击量" in df_day.columns and "花费" in df_day.columns:
+                df_day["CPC"] = np.where(df_day["点击量"]>0, df_day["花费"]/df_day["点击量"],0)
             fig_t1 = px.line(df_day, x="日期", y="花费", markers=True, title="每日花费")
             st.plotly_chart(fig_t1, use_container_width=True)
-            fig_t2 = px.line(df_day, x="日期", y="ROI", markers=True, title="每日ROI")
-            fig_t2.add_hline(y=roi_target, line_dash="dash", color="red")
-            st.plotly_chart(fig_t2, use_container_width=True)
+            if "ROI" in df_day.columns:
+                fig_t2 = px.line(df_day, x="日期", y="ROI", markers=True, title="每日ROI")
+                fig_t2.add_hline(y=roi_target, line_dash="dash", color="red")
+                st.plotly_chart(fig_t2, use_container_width=True)
         else:
             st.info("⚠️报表缺少【日期】字段，无法绘制趋势；导出报表勾选日期字段，多份日报表一起上传。")
 
@@ -280,12 +326,12 @@ if len(df_raw_list)>0:
         with f2:
             act = st.selectbox("执行动作",["提升预算","降低预算","提高出价","降低出价","暂停单元","开启单元","修改创意","其他"])
         with f3:
-            adj = st.text_input("调整内容，例：出价‑20%")
+            adj = st.text_input("调整内容，例：出价-20%")
             note = st.text_input("备注，例：观察3天")
         sub = st.form_submit_button("✅保存本次操作记录")
         if sub:
             new_log = {
-                "操作时间":datetime.now().strftime("%Y‑%m‑%d %H:%M:%S"),
+                "操作时间":datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                 "推广类型":t1,
                 "对象名称":t2,
                 "执行动作":act,
