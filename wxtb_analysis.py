@@ -83,7 +83,7 @@ if upload_file is not None:
     df_w = pd.DataFrame(warn_out)
     df_detail = pd.concat([df.reset_index(drop=True), df_s, df_w], axis=1)
 
-    # =========按商品ID/商品名称【合并汇总表】核心新增=========
+    # =========按商品ID/商品名称【合并汇总表】修复：只要有其中一列就可以汇总=========
     group_keys = []
     if "商品ID" in df.columns:
         group_keys.append("商品ID")
@@ -153,7 +153,7 @@ if upload_file is not None:
             csv_prod = df_product_summary.to_csv(index=False, encoding="utf-8-sig")
             st.download_button("📥下载商品汇总CSV", data=csv_prod, file_name="万相台_商品汇总表.csv")
         else:
-            st.info("⚠️缺少商品ID/商品名称列，无法生成商品汇总表，导出报表时勾选商品ID和商品名称")
+            st.info("💡提示：报表缺少【商品ID】和【商品名称】，无法生成商品汇总。\n全站推广明细下载时勾选商品ID、商品名称；关键词/人群报表手动补商品名称。")
 
     with tab2:
         st.subheader("明细清单：关键词、人群包、商品原始行数据，含预警")
