@@ -4,8 +4,8 @@ import plotly.express as px
 import numpy as np
 from datetime import datetime
 
-st.set_page_config(page_title="万相台投放工作台V8", layout="wide")
-st.title("📊万相台推广数据分析 & 自动优化策略V8")
+st.set_page_config(page_title="万相台投放工作台V8‑fix", layout="wide")
+st.title("📊万相台推广数据分析 & 自动优化策略V8‑fix")
 
 if "action_log" not in st.session_state:
     st.session_state.action_log = pd.DataFrame(columns=["操作时间","推广类型","对象名称","执行动作","调整内容","备注"])
@@ -55,6 +55,7 @@ if upload_file:
             frames.append(tmp)
         except Exception as e:
             st.warning(f"文件{f.name}读取失败:{e}")
+
 if frames:
     df_raw = pd.concat(frames, ignore_index=True)
     st.subheader("📄原始文件概览")
@@ -145,14 +146,12 @@ if frames:
     else: diag=f"⚠️整体ROI({troi:.2f})低于{roi_target}。优先处理{bc}个高花费低ROI；优质{gc}个可放大；{nc}个无成交建议关停。"
     st.info(diag)
 
-    # ===== 需要调整的等级（默认展示） =====
     need_levels = ["🔻高花费低ROI","🔴无成交","⚠️观察待优化","🟡零点击"]
 
-    tab1,tab2,tab3,tab4,tab5,tab6,tab7,tab8 = st.tabs([
+    tab1,tab2,tab3,tab4,tab5,tab6,tab7 = st.tabs([
         "🚨待调整商品(默认)","📦商品优化(图)","📋计划优化(图)","🎯商品×关键词",
-        "🔑关键词优化(图)","👥人群优化(图)","明细清单","时间趋势/记录"])
+        "🔑关键词优化(图)","👥人群优化(图)","明细/趋势/记录"])
 
-    # ----- tab1 待调整商品（用户核心诉求：把需要调整的商品展现出来） -----
     with tab1:
         st.info("💡默认展示【需要调整】的商品：高花费低ROI、无成交、观察待优化、零点击。优质可放大也算调整，可手动勾选。")
         if len(df_prod_sum)>0:
@@ -162,25 +161,26 @@ if frames:
             view = df_prod_sum[df_prod_sum["等级"].isin(sel)] if sel else df_prod_sum
             st.markdown(f"#### 当前展示 {len(view)} 个商品")
             if len(view)>0:
-                # 图：需要调整商品的ROI对比
                 f=px.bar(view.sort_values("总花费",ascending=False).head(20),x="商品名称",y="整体ROI",
                          title="待调整商品 ROI 对比(红=保本)",text_auto=".2f",color="等级",
                          color_discrete_map={"🔻高花费低ROI":"#e74c3c","🔴无成交":"#c0392b","⚠️观察待优化":"#f39c12","🟡零点击":"#95a5a6","✅优质可放大":"#2ecc71"})
-                f.add_hline(y=roi_target,line_dash="dash",line_color="red"); f.update_layout(xaxis_tickangle=-45)
+                f.add_hline(y=roi_target, line_dash="dash", line=dict(color="red"))
+                f.update_layout(xaxis_tickangle=-45)
                 st.plotly_chart(f,use_container_width=True)
-                # 高花费低ROI+无成交 重点图
+
                 key = view[view["等级"].isin(["🔻高花费低ROI","🔴无成交"])]
                 if len(key)>0:
                     st.markdown("#### ⚠️重点：高花费低ROI + 无成交（优先处理）")
-                    st.plotly_chart(px.bar(key.sort_values("总花费",ascending=False),x="总花费",y="商品名称",orientation="h",
+                    fk=px.bar(key.sort_values("总花费",ascending=False),x="总花费",y="商品名称",orientation="h",
                                            title="高花费低ROI/无成交商品花费",text_auto=".1f",color="等级",
-                                           color_discrete_map={"🔻高花费低ROI":"#e74c3c","🔴无成交":"#c0392b"}),use_container_width=True)
+                                           color_discrete_map={"🔻高花费低ROI":"#e74c3c","🔴无成交":"#c0392b"})
+                    st.plotly_chart(fk,use_container_width=True)
+
             show=[c for c in ["商品ID","商品名称","总花费","总成交金额","整体ROI","总点击","总加购","等级","策略","执行"] if c in view.columns]
             st.dataframe(view[show].round(2),use_container_width=True,hide_index=True)
             st.download_button("📥下载待调整商品清单",data=view.to_csv(index=False,encoding="utf-8-sig"),file_name="待调整商品清单.csv")
         else: st.info("未识别商品列(主体名称/商品名称)")
 
-    # ----- tab2 商品优化（全部+图） -----
     with tab2:
         st.info("全部商品按等级筛选查看。")
         if len(df_prod_sum)>0:
@@ -192,14 +192,14 @@ if frames:
                 if len(pe)>0:
                     st.plotly_chart(px.bar(pe.nlargest(15,"总花费"),x="总花费",y="商品名称",orientation="h",title="TOP15商品花费",text_auto=".1f"),use_container_width=True)
                     f2=px.bar(pe.sort_values("整体ROI",ascending=False).head(20),x="商品名称",y="整体ROI",title="商品ROI(红=保本)",text_auto=".2f",color="整体ROI",color_continuous_scale="RdYlGn")
-                    f2.add_hline(y=roi_target,line_dash="dash",line_color="red"); f2.update_layout(xaxis_tickangle=-45)
+                    f2.add_hline(y=roi_target, line_dash="dash", line=dict(color="red"))
+                    f2.update_layout(xaxis_tickangle=-45)
                     st.plotly_chart(f2,use_container_width=True)
             show=[c for c in ["商品ID","商品名称","总花费","总成交金额","整体ROI","总点击","总加购","等级","策略","执行"] if c in df_prod_sum.columns]
             st.dataframe(df_prod_sum[show].round(2),use_container_width=True,hide_index=True)
             st.download_button("📥下载全部商品清单",data=df_prod_sum.to_csv(index=False,encoding="utf-8-sig"),file_name="全部商品清单.csv")
         else: st.info("未识别商品列")
 
-    # ----- tab3 计划优化 -----
     with tab3:
         st.info("计划报表按计划汇总，看哪个计划烧钱、哪个计划ROI差。")
         if len(df_plan_sum)>0:
@@ -207,57 +207,57 @@ if frames:
             if len(pe)>0:
                 st.plotly_chart(px.bar(pe.nlargest(15,"总花费"),x="总花费",y="计划名称",orientation="h",title="TOP15计划花费",text_auto=".1f"),use_container_width=True)
                 f2=px.bar(pe.sort_values("整体ROI",ascending=False).head(20),x="计划名称",y="整体ROI",title="计划ROI(红=保本)",text_auto=".2f",color="整体ROI",color_continuous_scale="RdYlGn")
-                f2.add_hline(y=roi_target,line_dash="dash",line_color="red"); f2.update_layout(xaxis_tickangle=-45)
+                f2.add_hline(y=roi_target, line_dash="dash", line=dict(color="red"))
+                f2.update_layout(xaxis_tickangle=-45)
                 st.plotly_chart(f2,use_container_width=True)
             show=[c for c in ["计划名称","场景名称","总花费","总成交金额","整体ROI","总点击","等级","策略","执行"] if c in df_plan_sum.columns]
             st.dataframe(df_plan_sum[show].round(2),use_container_width=True,hide_index=True)
             st.download_button("📥下载计划优化清单",data=df_plan_sum.to_csv(index=False,encoding="utf-8-sig"),file_name="计划优化清单.csv")
         else: st.info("未识别计划列(计划名字/推广计划名称)")
 
-    # ----- tab4 商品×关键词 -----
     with tab4:
-        st.info("关键词数据明细报表用这个：每个商品×关键词一行，最细的优化。需导出「关键词数据明细」(含计划+商品+关键词)。")
+        st.info("关键词数据明细报表用这个：每个商品×关键词一行，最精细的优化。需要导出「关键词数据明细」报表(含计划+商品+关键词)。")
         if len(df_item_kw)>0:
             pe=df_item_kw[df_item_kw["总花费"]>=min_cost].copy()
             if len(pe)>0:
-                f2=px.bar(pe.sort_values("ROI",ascending=False).head(20),x="关键词",y="ROI",title="商品×关键词ROI(红=保本)",text_auto=".2f",color="ROI",color_continuous_scale="RdYlGn")
-                f2.add_hline(y=roi_target,line_dash="dash",line_color="red"); f2.update_layout(xaxis_tickangle=-45)
+                f2=px.bar(pe.sort_values("ROI",ascending=False).head(20),x="关键词",y="ROI",title="商品×关键词 ROI(红=保本)",text_auto=".2f",color="ROI",color_continuous_scale="RdYlGn")
+                f2.add_hline(y=roi_target, line_dash="dash", line=dict(color="red"))
+                f2.update_layout(xaxis_tickangle=-45)
                 st.plotly_chart(f2,use_container_width=True)
-                st.plotly_chart(px.bar(pe.nlargest(15,"总花费"),x="总花费",y="关键词",orientation="h",title="TOP15商品×关键词花费",text_auto=".1f"),use_container_width=True)
+                st.plotly_chart(px.bar(pe.nlargest(15,"总花费"),x="总花费",y="关键词",orientation="h",title="TOP15 商品×关键词花费",text_auto=".1f"),use_container_width=True)
             show=[c for c in ["商品名称","商品ID","关键词","总花费","总成交金额","ROI","CPC","等级","策略","执行"] if c in df_item_kw.columns]
             st.dataframe(df_item_kw[show].round(2),use_container_width=True,hide_index=True)
             st.download_button("📥下载商品×关键词优化清单",data=df_item_kw.to_csv(index=False,encoding="utf-8-sig"),file_name="商品关键词优化清单.csv")
-        else: st.info("需要同时有【商品】和【关键词】列(来自关键词数据明细)。当前报表缺其一。")
+        else: st.info("需要同时有【商品】和【关键词】列(来自关键词数据明细报表)。当前报表只有关键词，或只有商品。")
 
-    # ----- tab5 关键词 -----
     with tab5:
         if len(df_kw_sum)>0:
             pe=df_kw_sum[df_kw_sum["总花费"]>=min_cost].copy()
             if len(pe)>0:
                 st.plotly_chart(px.bar(pe.nlargest(15,"总花费"),x="总花费",y="关键词",orientation="h",title="TOP15关键词花费",text_auto=".1f"),use_container_width=True)
                 f2=px.bar(pe.sort_values("ROI",ascending=False).head(20),x="关键词",y="ROI",title="关键词ROI(红=保本)",text_auto=".2f")
-                f2.add_hline(y=roi_target,line_dash="dash",line_color="red"); f2.update_layout(xaxis_tickangle=-45)
+                f2.add_hline(y=roi_target, line_dash="dash", line=dict(color="red"))
+                f2.update_layout(xaxis_tickangle=-45)
                 st.plotly_chart(f2,use_container_width=True)
             show=[c for c in ["关键词","总花费","总成交金额","ROI","CPC","等级","策略","执行"] if c in df_kw_sum.columns]
             st.dataframe(df_kw_sum[show].round(2),use_container_width=True,hide_index=True)
             st.download_button("📥下载关键词清单",data=df_kw_sum.to_csv(index=False,encoding="utf-8-sig"),file_name="关键词清单.csv")
-        else: st.info("报表无【关键词】列")
+        else: st.info("报表无【关键词】列，请上传关键词数据明细报表")
 
-    # ----- tab6 人群 -----
     with tab6:
         if len(df_crowd_sum)>0:
             pe=df_crowd_sum[df_crowd_sum["总花费"]>=min_cost].copy()
             if len(pe)>0:
                 st.plotly_chart(px.bar(pe.sort_values("总花费",ascending=False).head(15),x="人群包名称",y=["总花费","总成交金额"],barmode="group",title="TOP15人群花费vs成交").update_layout(xaxis_tickangle=-45),use_container_width=True)
                 f2=px.bar(pe.sort_values("ROI",ascending=False).head(20),x="人群包名称",y="ROI",title="人群ROI(红=保本)",text_auto=".2f")
-                f2.add_hline(y=roi_target,line_dash="dash",line_color="red"); f2.update_layout(xaxis_tickangle=-45)
+                f2.add_hline(y=roi_target, line_dash="dash", line=dict(color="red"))
+                f2.update_layout(xaxis_tickangle=-45)
                 st.plotly_chart(f2,use_container_width=True)
             show=[c for c in ["人群包名称","总花费","总成交金额","ROI","CPC","等级","策略","执行"] if c in df_crowd_sum.columns]
             st.dataframe(df_crowd_sum[show].round(2),use_container_width=True,hide_index=True)
             st.download_button("📥下载人群清单",data=df_crowd_sum.to_csv(index=False,encoding="utf-8-sig"),file_name="人群清单.csv")
         else: st.info("报表无【人群包名称】列")
 
-    # ----- tab7 明细 + 时间趋势 + 记录 -----
     with tab7:
         st.markdown("### 🎯明细清单")
         dv=df_detail[df_detail["等级"].isin(filter_level_list)]
@@ -278,7 +278,7 @@ if frames:
             st.plotly_chart(px.line(dd,x="日期",y="花费",markers=True,title="每日花费"),use_container_width=True)
             if "ROI" in dd.columns:
                 f2=px.line(dd,x="日期",y="ROI",markers=True,title="每日ROI")
-                f2.add_hline(y=roi_target,line_dash="dash",color="red")
+                f2.add_hline(y=roi_target, line_dash="dash", line=dict(color="red"))
                 st.plotly_chart(f2,use_container_width=True)
         else: st.warning("报表缺少【日期】列")
 
