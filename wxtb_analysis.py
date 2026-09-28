@@ -1,7 +1,8 @@
-# ====================== 🤖 AI投放一键诊断【修复版】 ======================
+'''
+# ====================== 🤖 AI投放一键诊断【暂时注释禁用】 ======================
 st.markdown("---")
 st.subheader("🤖 AI投放一键诊断")
-st.info("💡火山方舟：需要先创建【推理接入点】，复制接入点ID(ep‑xxxx)，API‑Key。旧的doubao‑lite‑4k模型已下线，不可直接使用。")
+st.info("💡该功能暂时禁用，可下载【待调整商品清单.csv】上传豆包网页版做AI分析。")
 with st.expander("🔐 方舟API配置（仅浏览器会话保存，不会上传服务器）", expanded=False):
     api_key = st.text_input("Ark API‑Key", type="password", placeholder="火山方舟API Key")
     ep_id = st.text_input("推理接入点 Endpoint‑ID", placeholder="ep‑xxxxxxxxxx （模型接入点ID）")
@@ -14,7 +15,6 @@ if run_ai:
     with st.spinner("AI正在分析万相台投放数据，请稍候…"):
         try:
             import requests
-            # 取待调整商品数据
             view_ai = df_prod_sum[df_prod_sum["等级"].isin(need_levels)].copy()
             csv_text_ai = view_ai[["商品ID","商品名称","总花费","总成交金额","整体ROI","等级","执行"]].to_csv(index=False)
 
@@ -63,3 +63,4 @@ if ai_report:
     st.download_button("📥复制/下载AI报告", data=ai_report, file_name="AI万相台投放报告.txt", mime="text/plain")
 
 # ====================== 🤖 AI投放一键诊断【结束】 ======================
+'''
